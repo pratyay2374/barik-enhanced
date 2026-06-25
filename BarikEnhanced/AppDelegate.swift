@@ -111,16 +111,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // Create or update panels for each screen
+        let isBottom = ConfigManager.shared.config.experimental.position == .bottom
+        let foregroundHeight = ConfigManager.shared.config.experimental.foreground.resolveHeight()
+
         for (index, screen) in screens.enumerated() {
             let screenFrame = screen.frame
+
+            // The menu bar panel should only cover the strip where widgets live,
+            // not the full screen. This lets clicks pass through to the desktop.
+            let menuBarFrame: CGRect = {
+                if isBottom {
+                    return CGRect(
+                        x: screenFrame.origin.x,
+                        y: screenFrame.origin.y,
+                        width: screenFrame.width,
+                        height: foregroundHeight
+                    )
+                } else {
+                    return CGRect(
+                        x: screenFrame.origin.x,
+                        y: screenFrame.origin.y + screenFrame.height - foregroundHeight,
+                        width: screenFrame.width,
+                        height: foregroundHeight
+                    )
+                }
+            }()
 
             if index < backgroundPanels.count {
                 // Update existing panel — re-apply frame and level to recover from
                 // corrupted state after system crashes or sleep/wake cycles
                 backgroundPanels[index].setFrame(screenFrame, display: true)
+                backgroundPanels[index].ignoresMouseEvents = true
                 backgroundPanels[index].level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopWindow)))
                 backgroundPanels[index].orderFront(nil)
-                menuBarPanels[index].setFrame(screenFrame, display: true)
+                menuBarPanels[index].setFrame(menuBarFrame, display: true)
                 menuBarPanels[index].level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.backstopMenu)))
                 menuBarPanels[index].orderFront(nil)
             } else {
@@ -128,12 +152,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let backgroundPanel = createPanel(
                     frame: screenFrame,
                     level: Int(CGWindowLevelForKey(.desktopWindow)),
-                    hostingRootView: AnyView(BackgroundView())
+                    hostingRootView: AnyView(BackgroundView()),
+                    ignoresMouse: true
                 )
                 let menuBarPanel = createPanel(
-                    frame: screenFrame,
+                    frame: menuBarFrame,
                     level: Int(CGWindowLevelForKey(.backstopMenu)),
-                    hostingRootView: AnyView(MenuBarView())
+                    hostingRootView: AnyView(MenuBarView()),
+                    ignoresMouse: false
                 )
                 backgroundPanels.append(backgroundPanel)
                 menuBarPanels.append(menuBarPanel)
@@ -143,7 +169,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Creates an NSPanel with the provided parameters.
     private func createPanel(
-        frame: CGRect, level: Int, hostingRootView: AnyView
+        frame: CGRect, level: Int, hostingRootView: AnyView,
+        ignoresMouse: Bool = false
     ) -> NSPanel {
         let newPanel = NSPanel(
             contentRect: frame,
@@ -155,6 +182,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         newPanel.backgroundColor = .clear
         newPanel.hasShadow = false
         newPanel.isReleasedWhenClosed = false
+        newPanel.ignoresMouseEvents = ignoresMouse
         newPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         let hostingView = NSHostingView(rootView: hostingRootView)
         hostingView.wantsLayer = true

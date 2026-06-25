@@ -328,7 +328,7 @@ struct ForegroundConfig: Decodable {
         case .barikDefault:
             return CGFloat(Constants.menuBarHeight)
         case .menuBar:
-            return NSApplication.shared.mainMenu.map({ CGFloat($0.menuBarHeight) }) ?? 0
+            return NSStatusBar.system.thickness
         case .float(let value):
             return CGFloat(value)
         }
@@ -402,7 +402,7 @@ struct BackgroundConfig: Decodable {
         case .barikDefault:
             return nil
         case .menuBar:
-            return NSApplication.shared.mainMenu.map({ CGFloat($0.menuBarHeight) }) ?? 0
+            return NSStatusBar.system.thickness
         case .float(let value):
             return CGFloat(value)
         }
