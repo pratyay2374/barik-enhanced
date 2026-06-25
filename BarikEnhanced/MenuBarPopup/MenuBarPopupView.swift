@@ -169,15 +169,12 @@ struct MenuBarPopupView<Content: View>: View {
     }
 
     var computedYOffset: CGFloat {
-        let isBottom = configManager.config.experimental.position == .bottom
-        
-        if isBottom {
-            // For bottom positioning, use the original logic
-            return viewFrame.height / 2
-        } else {
-            // For top positioning, reduce the offset to bring popups closer
-            return viewFrame.height / 2 - 65  // Bring closer to top menu bar
-        }
+        // The popup center is placed exactly at the widget's Y coordinate.
+        // For the bottom bar, we shift upward by half the popup height.
+        // For the top bar, we shift downward by half the popup height.
+        // In both cases, combined with the padding(.top/.bottom, foregroundHeight + 5),
+        // this ensures the popup lands cleanly adjacent to the menu bar strip.
+        return (viewFrame.height / 2) - 10
     }
 }
 

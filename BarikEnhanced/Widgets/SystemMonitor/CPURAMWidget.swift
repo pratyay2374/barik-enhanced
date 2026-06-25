@@ -88,8 +88,8 @@ struct CPURAMWidget: View {
         .frame(maxHeight: .infinity)
         .background(.black.opacity(0.001))
         .onTapGesture {
-            MenuBarPopup.show(rect: rect, id: "systemmonitor") { 
-                SystemMonitorPopup() 
+            MenuBarPopup.show(rect: rect, id: "cpuram") { 
+                CPURAMPopup() 
             }
         }
     }

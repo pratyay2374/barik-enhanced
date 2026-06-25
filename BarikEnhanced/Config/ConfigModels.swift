@@ -369,18 +369,28 @@ struct BackgroundConfig: Decodable {
     let height: BackgroundForegroundHeight
     let blur: Material
     let black: Bool
+    let blurRadius: CGFloat?
+    let opacity: CGFloat?
+    let color: String?
 
     init() {
         self.displayed = true
         self.height = .barikDefault
         self.blur = .regular
         self.black = false
+        self.blurRadius = nil
+        self.opacity = nil
+        self.color = nil
     }
     
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         displayed = try container.decodeIfPresent(Bool.self, forKey: .displayed) ?? true
         height = try container.decodeIfPresent(BackgroundForegroundHeight.self, forKey: .height) ?? .barikDefault
+        
+        blurRadius = try container.decodeIfPresent(CGFloat.self, forKey: .blurRadius)
+        opacity = try container.decodeIfPresent(CGFloat.self, forKey: .opacity)
+        color = try container.decodeIfPresent(String.self, forKey: .color)
         
         var materialIndex = try container.decodeIfPresent(Int.self, forKey: .blur) ?? 1
         if materialIndex < 1 {
@@ -394,7 +404,7 @@ struct BackgroundConfig: Decodable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case displayed, height, blur
+        case displayed, height, blur, blurRadius, opacity, color
     }
 
     func resolveHeight() -> CGFloat? {
