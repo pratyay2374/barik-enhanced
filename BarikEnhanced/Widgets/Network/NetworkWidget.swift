@@ -7,11 +7,17 @@ struct NetworkWidget: View {
 
     var body: some View {
         HStack(spacing: 15) {
-            if viewModel.wifiState != .notSupported {
+            if shouldShowWifi {
                 wifiIcon
+                    .onTapGesture {
+                        MenuBarPopup.show(rect: rect, id: "network") { NetworkPopup() }
+                    }
             }
             if viewModel.ethernetState != .notSupported {
                 ethernetIcon
+                    .onTapGesture {
+                        MenuBarPopup.show(rect: rect, id: "network") { NetworkPopup() }
+                    }
             }
         }
         .background(
@@ -28,8 +34,25 @@ struct NetworkWidget: View {
         .experimentalConfiguration(cornerRadius: 15)
         .frame(maxHeight: .infinity)
         .background(.black.opacity(0.001))
-        .onTapGesture {
-            MenuBarPopup.show(rect: rect, id: "network") { NetworkPopup() }
+    }
+
+    /// Show the Wi-Fi icon only when Wi-Fi is the active interface, explicitly
+    /// disabled, or has no connectivity — but NOT when it's merely "available
+    /// but not in use" while Ethernet is the active connection.
+    private var shouldShowWifi: Bool {
+        switch viewModel.wifiState {
+        case .notSupported:
+            // No Wi-Fi hardware at all — hide
+            return false
+        case .disconnected:
+            // Wi-Fi interface is available but not in use (e.g. Ethernet is
+            // the active path). Only show if Ethernet is also not connected,
+            // so the user still gets *something* clickable.
+            return viewModel.ethernetState != .connected
+                && viewModel.ethernetState != .connectedWithoutInternet
+        default:
+            // connected, connecting, connectedWithoutInternet, disabled — always show
+            return true
         }
     }
 
