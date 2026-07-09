@@ -137,6 +137,10 @@ final class ConfigManager: ObservableObject {
             warning-threshold = 60
             critical-threshold = 80
 
+            [widgets.default.nowplaying]
+            # max-width = 110               # cap for the song text column (e.g. 150, 200, 250)
+            # display-mode = "auto"         # auto | artwork-only | title-only | title-artist | icon-only
+
             [popup.default.time]
             view-variant = "box"
             

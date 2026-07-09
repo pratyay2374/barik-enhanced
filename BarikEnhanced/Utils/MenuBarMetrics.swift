@@ -31,4 +31,26 @@ final class MenuBarMetrics: ObservableObject {
 
     /// Kept for API compatibility. No-op — see `startDetecting`.
     func restartDetection() {}
+
+    /// Trailing reservation in points that clears macOS's native status icons.
+    ///
+    /// Narrow screens (< 1500 pt wide) get 220 pt of clearance; wide screens use
+    /// only `horizontal-padding` so the bar stays close to the right edge. A user
+    /// `experimental.foreground.system-status-reservation` overrides the heuristic.
+    ///
+    /// Pass the screen a widget lives on to reserve for *that* display; pass `nil`
+    /// (as the bar layout does) to key the heuristic off the narrowest screen.
+    static func trailingReservation(for screen: NSScreen? = nil) -> CGFloat {
+        let foreground = ConfigManager.shared.config.experimental.foreground
+        let hp = foreground.horizontalPadding
+        if let userReservation = foreground.systemStatusReservation {
+            return max(hp, userReservation)
+        }
+        let width = screen?.frame.width
+            ?? (NSScreen.screens.map { $0.frame.width }.min() ?? .infinity)
+        if width < 1500 {
+            return max(hp, 220)
+        }
+        return hp
+    }
 }

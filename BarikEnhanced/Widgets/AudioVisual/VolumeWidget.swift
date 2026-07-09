@@ -13,7 +13,9 @@ struct VolumeWidget: View {
             Image(systemName: volumeIcon)
                 .font(.system(size: 15, weight: .medium))
                 .foregroundStyle(volumeColor)
+                .contentTransition(.symbolEffect(.replace))
                 .animation(.easeInOut(duration: 0.3), value: audioVisualManager.isMuted)
+                .animation(.easeInOut(duration: 0.3), value: audioVisualManager.isBluetoothActive)
             
             if showPercentage {
                 Text("\(Int(audioVisualManager.volumeLevel * 100))%")
@@ -44,7 +46,12 @@ struct VolumeWidget: View {
     private var volumeIcon: String {
         if audioVisualManager.isMuted {
             return "speaker.slash.fill"
-        } else if audioVisualManager.volumeLevel < 0.33 {
+        }
+        // Show headphone icon for Bluetooth devices (like macOS native behavior)
+        if audioVisualManager.isBluetoothActive {
+            return "headphones"
+        }
+        if audioVisualManager.volumeLevel < 0.33 {
             return "speaker.wave.1.fill"
         } else if audioVisualManager.volumeLevel < 0.66 {
             return "speaker.wave.2.fill"

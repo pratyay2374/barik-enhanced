@@ -219,6 +219,13 @@ extension TOMLValue {
         return nil
     }
 
+    /// Numeric value, accepting either a TOML integer or floating-point literal.
+    var doubleValue: Double? {
+        if case let .double(d) = self { return d }
+        if case let .int(i) = self { return Double(i) }
+        return nil
+    }
+
     var boolValue: Bool? {
         if case let .bool(b) = self { return b }
         return nil
