@@ -4,6 +4,7 @@ struct ClaudeUsagePopup: View {
     @EnvironmentObject var configProvider: ConfigProvider
     @ObservedObject private var usageManager = ClaudeUsageManager.shared
     @State private var showSettings = false
+    @State private var codeInput = ""
 
     private var thresholdConfiguration: UsageThresholdConfiguration {
         UsageThresholdConfiguration(config: configProvider.config)
@@ -21,30 +22,37 @@ struct ClaudeUsagePopup: View {
                     accentColor: claudeOrange,
                     initialConfiguration: thresholdConfiguration
                 )
-            } else if !usageManager.isConnected {
-                connectView
-            } else if usageManager.usageData.isAvailable {
-                rateLimitSection(
-                    icon: "clock",
-                    title: "5-Hour Window",
-                    percentage: usageManager.usageData.fiveHourPercentage,
-                    resetDate: usageManager.usageData.fiveHourResetDate,
-                    resetPrefix: "Resets in"
-                )
-                Divider().background(Color.white.opacity(0.2))
-                rateLimitSection(
-                    icon: "calendar",
-                    title: "Weekly",
-                    percentage: usageManager.usageData.weeklyPercentage,
-                    resetDate: usageManager.usageData.weeklyResetDate,
-                    resetPrefix: "Resets"
-                )
-                Divider().background(Color.white.opacity(0.2))
-                footerSection
-            } else if usageManager.fetchFailed {
-                errorView
             } else {
-                loadingView
+                switch usageManager.authPhase {
+                case .signedOut:
+                    signInView
+                case .awaitingCode:
+                    codeEntryView
+                case .signedIn:
+                    if usageManager.usageData.isAvailable {
+                        rateLimitSection(
+                            icon: "clock",
+                            title: "5-Hour Window",
+                            percentage: usageManager.usageData.fiveHourPercentage,
+                            resetDate: usageManager.usageData.fiveHourResetDate,
+                            resetPrefix: "Resets in"
+                        )
+                        Divider().background(Color.white.opacity(0.2))
+                        rateLimitSection(
+                            icon: "calendar",
+                            title: "Weekly",
+                            percentage: usageManager.usageData.weeklyPercentage,
+                            resetDate: usageManager.usageData.weeklyResetDate,
+                            resetPrefix: "Resets"
+                        )
+                        Divider().background(Color.white.opacity(0.2))
+                        footerSection
+                    } else if usageManager.fetchFailed {
+                        errorView
+                    } else {
+                        loadingView
+                    }
+                }
             }
         }
         .frame(width: 280)
@@ -171,12 +179,20 @@ struct ClaudeUsagePopup: View {
     // MARK: - Footer
 
     private var footerSection: some View {
-        HStack {
+        HStack(spacing: 12) {
             Text("Updated \(timeAgoString(usageManager.usageData.lastUpdated))")
                 .font(.system(size: 11))
                 .opacity(0.4)
 
             Spacer()
+
+            Button("Sign out") {
+                usageManager.signOut()
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 11))
+            .opacity(0.5)
+            .pointingHandOnHover()
 
             Button(action: {
                 usageManager.refresh()
@@ -186,13 +202,7 @@ struct ClaudeUsagePopup: View {
                     .opacity(0.6)
             }
             .buttonStyle(.plain)
-            .onHover { hovering in
-                if hovering {
-                    NSCursor.pointingHand.push()
-                } else {
-                    NSCursor.pop()
-                }
-            }
+            .pointingHandOnHover()
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 10)
@@ -206,40 +216,43 @@ struct ClaudeUsagePopup: View {
         return "\(minutes / 60)h ago"
     }
 
-    // MARK: - Connect
+    // MARK: - Sign in
 
-    private var connectView: some View {
+    private var signInView: some View {
         VStack(spacing: 14) {
             Image("ClaudeIcon")
                 .resizable()
                 .scaledToFit()
                 .frame(width: 28, height: 28)
 
-            Text("View your Claude rate limit usage directly in the menu bar.")
+            Text("Sign in with your Claude account to see your rate limit usage in the menu bar.")
                 .font(.system(size: 11))
                 .opacity(0.5)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
 
             Button(action: {
-                usageManager.requestAccess()
+                codeInput = ""
+                usageManager.beginSignIn()
             }) {
-                Text("Allow Access")
+                Text("Sign in with Claude")
                     .font(.system(size: 12, weight: .medium))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 6)
             }
             .buttonStyle(.borderedProminent)
-            .tint(Color(red: 0.89, green: 0.45, blue: 0.29))
-            .onHover { hovering in
-                if hovering {
-                    NSCursor.pointingHand.push()
-                } else {
-                    NSCursor.pop()
-                }
+            .tint(claudeOrange)
+            .pointingHandOnHover()
+
+            if let error = usageManager.errorMessage {
+                Text(error)
+                    .font(.system(size: 10))
+                    .foregroundColor(.red.opacity(0.8))
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
-            Text("Reads credentials from your Claude Code keychain entry.")
+            Text("Barik stores its own login securely in your keychain.")
                 .font(.system(size: 10))
                 .opacity(0.3)
                 .multilineTextAlignment(.center)
@@ -248,6 +261,71 @@ struct ClaudeUsagePopup: View {
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 30)
         .padding(.vertical, 30)
+    }
+
+    // MARK: - Paste authorization code
+
+    private var codeEntryView: some View {
+        VStack(spacing: 12) {
+            Text("Approve access in your browser, then paste the code shown on the page below.")
+                .font(.system(size: 11))
+                .opacity(0.6)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+
+            TextField("Paste authorization code", text: $codeInput)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 11, design: .monospaced))
+                .onSubmit { submitCode() }
+                .disabled(usageManager.isAuthenticating)
+
+            Button(action: { submitCode() }) {
+                HStack(spacing: 6) {
+                    if usageManager.isAuthenticating {
+                        ProgressView().scaleEffect(0.6)
+                    }
+                    Text(usageManager.isAuthenticating ? "Signing in…" : "Complete Sign-in")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(claudeOrange)
+            .disabled(usageManager.isAuthenticating || codeInput.trimmingCharacters(in: .whitespaces).isEmpty)
+            .pointingHandOnHover()
+
+            if let error = usageManager.errorMessage {
+                Text(error)
+                    .font(.system(size: 10))
+                    .foregroundColor(.red.opacity(0.8))
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack(spacing: 16) {
+                Button("Reopen page") { usageManager.reopenSignInPage() }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 10))
+                    .opacity(0.6)
+                    .pointingHandOnHover()
+                Button("Cancel") {
+                    codeInput = ""
+                    usageManager.cancelSignIn()
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 10))
+                .opacity(0.6)
+                .pointingHandOnHover()
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 24)
+        .padding(.vertical, 24)
+    }
+
+    private func submitCode() {
+        usageManager.submitCode(codeInput)
     }
 
     // MARK: - Loading
@@ -279,7 +357,7 @@ struct ClaudeUsagePopup: View {
                 .fixedSize(horizontal: false, vertical: true)
 
             Button(action: {
-                usageManager.refresh()
+                usageManager.retry()
             }) {
                 Text("Retry")
                     .font(.system(size: 12, weight: .medium))
@@ -303,5 +381,18 @@ struct ClaudeUsagePopup: View {
 
     private var claudeOrange: Color {
         Color(red: 0.89, green: 0.45, blue: 0.29)
+    }
+}
+
+private extension View {
+    /// Shows the pointing-hand cursor while hovered.
+    func pointingHandOnHover() -> some View {
+        onHover { hovering in
+            if hovering {
+                NSCursor.pointingHand.push()
+            } else {
+                NSCursor.pop()
+            }
+        }
     }
 }

@@ -12,16 +12,50 @@ struct MenuBarView: View {
     /// status icons; wide screens use only horizontal-padding so the bar
     /// stays visually close to the right edge. Override with
     /// `experimental.foreground.system-status-reservation`.
+    ///
+    /// Shared with the Now Playing widget via `MenuBarMetrics` so both agree on
+    /// the non-notch trailing budget. The bar keys off the narrowest screen.
     private var trailingReservation: CGFloat {
-        let hp = configManager.config.experimental.foreground.horizontalPadding
-        if let userReservation = configManager.config.experimental.foreground.systemStatusReservation {
-            return max(hp, userReservation)
+        MenuBarMetrics.trailingReservation()
+    }
+
+    // MARK: - Notch reservations
+    //
+    // Values below are in the content ZStack's coordinate space, whose x=0 is the
+    // content area's leading edge — that is `horizontal-padding` in from the
+    // screen's left edge. `NSScreen`'s notch insets are measured from the screen's
+    // left edge, so subtract `horizontal-padding` to convert.
+
+    /// Screen hosting this bar's panel, for notch-aware section reservations.
+    @State private var hostScreen: NSScreen?
+
+    private var horizontalPadding: CGFloat {
+        configManager.config.experimental.foreground.horizontalPadding
+    }
+
+    private var contentWidth: CGFloat {
+        guard let s = hostScreen else { return .infinity }
+        return s.frame.width - horizontalPadding - trailingReservation
+    }
+
+    /// Right boundary of the leading (left) section: the notch's left edge on a
+    /// notched display, otherwise the content width minus a fixed reserve for the
+    /// trailing section (the previous hard-coded 180 pt behaviour).
+    private var leadingMaxWidth: CGFloat {
+        if let s = hostScreen, s.hasNotch, let notchL = s.notchLeadingInset {
+            return max(0, notchL - horizontalPadding)
         }
-        let narrowestScreenWidth = NSScreen.screens.map { $0.frame.width }.min() ?? .infinity
-        if narrowestScreenWidth < 1500 {
-            return max(hp, 220)
+        return contentWidth.isFinite ? max(0, contentWidth - 180) : .infinity
+    }
+
+    /// Left inset for the trailing (right) section so it begins to the right of the
+    /// notch on a notched display; 0 otherwise. Combined with a clip, this keeps
+    /// every trailing widget — whichever is closest to the centre — out of the notch.
+    private var trailingLeadingReservation: CGFloat {
+        if let s = hostScreen, s.hasNotch, let notchR = s.notchTrailingInset {
+            return max(0, notchR - horizontalPadding)
         }
-        return hp
+        return 0
     }
 
     /// Splits regular items at the first spacer or divider widget.
@@ -66,9 +100,10 @@ struct MenuBarView: View {
                     draggableWidget(for: item)
                 }
             }
+            // Confine the leading section to the left of the notch (or to a fixed
+            // reserve on non-notched displays) and clip so it never draws under it.
+            .frame(maxWidth: leadingMaxWidth, maxHeight: .infinity, alignment: .leading)
             .clipped()
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-            .padding(.trailing, 180)
 
             HStack(spacing: configManager.config.experimental.foreground.spacing) {
                 Spacer(minLength: 0)
@@ -108,7 +143,18 @@ struct MenuBarView: View {
                     }
                     .padding(.leading, 8)
             }
+            // Fill and right-align as before (so the right edge stays anchored and
+            // the group reflows when widgets are added/removed), then MASK out the
+            // notch region on the left. A mask — not padding — is used so the
+            // section's width never changes; padding would grow it and shove the
+            // rightmost icons off-screen.
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+            .mask(alignment: .leading) {
+                HStack(spacing: 0) {
+                    Color.clear.frame(width: trailingLeadingReservation)
+                    Rectangle().fill(Color.black)
+                }
+            }
         }
         .contextMenu {
             Button("Configure Widgets...") {
@@ -129,6 +175,7 @@ struct MenuBarView: View {
         .padding(.leading, configManager.config.experimental.foreground.horizontalPadding)
         .padding(.trailing, trailingReservation)
         .background(.black.opacity(0.001))
+        .background(ScreenReader(screen: $hostScreen))
         .preferredColorScheme(theme)
         .onAppear {
             displayedItems = configManager.config.rootToml.widgets.displayed

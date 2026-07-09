@@ -53,7 +53,7 @@ struct NetworkActivityWidget: View {
                     .animation(.easeInOut(duration: 0.5), value: systemMonitor.downloadSpeed > 0.01)
             }
         }
-        .padding(.horizontal, 8)
+        .padding(.horizontal, 0)
         .padding(.vertical, 4)
         .background(
             GeometryReader { geometry in

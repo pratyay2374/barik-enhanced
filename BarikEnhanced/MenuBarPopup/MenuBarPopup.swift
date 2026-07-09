@@ -35,6 +35,12 @@ class HidingPanel: NSPanel, NSWindowDelegate {
             repeats: false
         ) { [weak self] _ in
             self?.orderOut(nil)
+            // Tear down the SwiftUI hierarchy so it stops rendering while
+            // hidden. Without this, ordering the window out leaves the hosting
+            // view alive — any `repeatForever`/`TimelineView` animations (and
+            // `onDisappear`-based cleanup) would otherwise keep running,
+            // burning CPU for a window nobody can see.
+            self?.contentView = NSView()
         }
     }
 }
@@ -63,6 +69,8 @@ class MenuBarPopup {
                 / 1000.0
             DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
                 panel.orderOut(nil)
+                // Tear down content so hidden popups don't keep animating.
+                panel.contentView = NSView()
                 lastContentIdentifier = nil
             }
             return
