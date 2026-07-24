@@ -59,7 +59,7 @@ final class AppUpdater: ObservableObject {
         let versionWithoutPrefix =
             version.hasPrefix("v") ? String(version.dropFirst()) : version
         let urlString =
-            "https://github.com/MateoCerquetella/barik-enhanced/releases/download/\(version)/barik-v\(versionWithoutPrefix).zip"
+            "https://github.com/pratyay2374/barik-enhanced/releases/download/\(version)/barik-v\(versionWithoutPrefix).zip"
         return URL(string: urlString)
     }
 
@@ -68,7 +68,7 @@ final class AppUpdater: ObservableObject {
         guard
             let url = URL(
                 string:
-                    "https://api.github.com/repos/MateoCerquetella/barik-enhanced/releases/latest"
+                    "https://api.github.com/repos/pratyay2374/barik-enhanced/releases/latest"
             )
         else { return }
         URLSession.shared.dataTask(with: url) { [weak self] data, _, error in
