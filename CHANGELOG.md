@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Bug Fixes
+- **Codex Usage widget: excessive CPU use**: Refreshes now coalesce overlapping scans and read only the latest 20 session transcripts, using the final 512 KB of each transcript. This avoids repeatedly parsing the full Codex history, which can contain very large JSONL session files. (Pulled in from upstream `MateoCerquetella/barik-enhanced@6ef80f1`.)
+
 ## 1.4.2
 
 ### Bug Fixes
