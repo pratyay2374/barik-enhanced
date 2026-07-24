@@ -57,11 +57,8 @@ Click the gear icon at the end of the bar to access:
 
 ## Installation
 
-### Homebrew (Recommended)
-```bash
-brew tap MateoCerquetella/barik-enhanced
-brew install --cask barik-enhanced
-```
+### Download (Recommended)
+Download the latest `.zip` from [Releases](https://github.com/pratyay2374/barik-enhanced/releases/latest), unzip, and move `BarikEnhanced.app` to `/Applications`.
 
 ### From Source
 ```bash
