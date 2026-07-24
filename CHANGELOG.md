@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.4.2
+
+### Bug Fixes
+- **Update check pointed at upstream repo**: The "Update" pill checked `MateoCerquetella/barik-enhanced` releases, so upstream cutting a new version triggered a false update prompt in this fork. Now checks `pratyay2374/barik-enhanced` instead.
+- **Changelog popup pointed at upstream repo**: The in-app "What's New" changelog fetched `CHANGELOG.md` from upstream instead of this fork.
+
+### Other
+- Removed Homebrew cask install instructions/rules — this fork is distributed via zip download from GitHub Releases only.
+
 ## 1.3.6
 
 ### Improvements
