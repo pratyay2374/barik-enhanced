@@ -7,18 +7,14 @@ class AerospaceSpacesProvider: SpacesProvider, SwitchableSpacesProvider {
 
     func getSpacesWithWindows() -> [AeroSpace]? {
         guard
-            var spaces = fetchSpaces(),
+            let spaces = fetchSpaces(),
             let windows = fetchWindows()
         else {
             return nil
         }
 
-        let focusedSpace = fetchFocusedSpace()
-        if let focusedSpace {
-            for i in 0..<spaces.count {
-                spaces[i].isFocused = (spaces[i].id == focusedSpace.id)
-            }
-        }
+        // `fetchSpaces()` already carries the focus flag, so no extra CLI call.
+        let focusedSpace = spaces.first { $0.isFocused }
 
         let focusedWindow = fetchFocusedWindow()
         var spaceDict = Dictionary(
@@ -96,10 +92,17 @@ class AerospaceSpacesProvider: SpacesProvider, SwitchableSpacesProvider {
         return data
     }
 
+    /// Lists every workspace *and* which one is focused in a single invocation.
+    ///
+    /// The `workspace-is-focused` format field lets us fold what used to be a
+    /// separate `list-workspaces --focused` call into this one — each `aerospace`
+    /// invocation is a full `posix_spawn` plus a round-trip that wakes
+    /// AeroSpace.app, so dropping one is a real saving on every refresh.
     private func fetchSpaces() -> [AeroSpace]? {
         guard
             let data = runAerospaceCommand(arguments: [
-                "list-workspaces", "--all", "--json",
+                "list-workspaces", "--all", "--json", "--format",
+                "%{workspace} %{workspace-is-focused}",
             ])
         else {
             return nil
@@ -131,23 +134,9 @@ class AerospaceSpacesProvider: SpacesProvider, SwitchableSpacesProvider {
         }
     }
 
-    private func fetchFocusedSpace() -> AeroSpace? {
-        guard
-            let data = runAerospaceCommand(arguments: [
-                "list-workspaces", "--focused", "--json",
-            ])
-        else {
-            return nil
-        }
-        let decoder = JSONDecoder()
-        do {
-            return try decoder.decode([AeroSpace].self, from: data).first
-        } catch {
-            print("Decode focused space error: \(error)")
-            return nil
-        }
-    }
-
+    /// Note: there is no `window-is-focused` format field (verified against
+    /// AeroSpace 0.20.2 — the CLI rejects it), so unlike the focused *workspace*
+    /// this one can't be folded into `fetchWindows()` and needs its own call.
     private func fetchFocusedWindow() -> AeroWindow? {
         guard
             let data = runAerospaceCommand(arguments: [

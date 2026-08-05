@@ -124,6 +124,15 @@ enum MusicApp: String, CaseIterable {
     case spotify = "Spotify"
     case music = "Music"
 
+    /// Bundle identifier, used for running-app checks. See `isAppRunning` for why
+    /// this is matched instead of `localizedName`.
+    var bundleId: String {
+        switch self {
+        case .spotify: return "com.spotify.client"
+        case .music: return "com.apple.Music"
+        }
+    }
+
     /// AppleScript to fetch the now playing song (pipe-delimited).
     ///
     /// - `full: false` returns 6 core fields (state|title|artist|art|pos|dur) —
@@ -287,7 +296,9 @@ final class NowPlayingProvider {
 
     /// Returns the now playing song for a specific music application.
     private static func fetchNowPlaying(from app: MusicApp, full: Bool) -> NowPlayingSong? {
-        guard let output = runAppleScript(app.nowPlayingScript(full: full)),
+        guard
+            let output = runAppleScript(
+                app.nowPlayingScript(full: full), cached: true),
             output != "stopped"
         else {
             return nil
@@ -319,26 +330,121 @@ final class NowPlayingProvider {
                 end if
             end tell
             """
-        guard let appleScript = NSAppleScript(source: script) else { return nil }
+        dispatchPrecondition(condition: .onQueue(scriptQueue))
+        guard let appleScript = cachedScript(for: script) else { return nil }
         var error: NSDictionary?
         let descriptor = appleScript.executeAndReturnError(&error)
         guard error == nil, !descriptor.data.isEmpty else { return nil }
         return descriptor.data
     }
 
-    /// Checks if the specified music application is currently running.
-    static func isAppRunning(_ app: MusicApp) -> Bool {
-        NSWorkspace.shared.runningApplications.contains {
-            $0.localizedName == app.rawValue
+    // MARK: - Running-app tracking
+
+    /// Bundle IDs of the supported players currently running.
+    ///
+    /// Maintained from workspace launch/terminate notifications rather than
+    /// recomputed per poll. Scanning `NSWorkspace.shared.runningApplications` is
+    /// deceptively expensive: *both* `localizedName` and `bundleIdentifier` fault
+    /// in information from launchservicesd
+    /// (`_fetchDynamicProperties` / `_fetchStaticInformationWithAtLeastKey:` →
+    /// `_LSCopyApplicationInformation`), each a synchronous XPC round-trip. Doing
+    /// that per player on every tick was a measurable chunk of idle CPU.
+    private static var runningMusicApps: Set<String> = []
+    private static let runningAppsLock = NSLock()
+
+    /// Seeds the running-player cache and keeps it current. Idempotent.
+    static func startTrackingRunningApps() {
+        let musicIds = Set(MusicApp.allCases.map(\.bundleId))
+
+        let initial = Set(
+            NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier)
+        ).intersection(musicIds)
+        runningAppsLock.lock()
+        runningMusicApps = initial
+        runningAppsLock.unlock()
+
+        let center = NSWorkspace.shared.notificationCenter
+        let events: [(Notification.Name, Bool)] = [
+            (NSWorkspace.didLaunchApplicationNotification, true),
+            (NSWorkspace.didTerminateApplicationNotification, false),
+        ]
+        for (name, isRunning) in events {
+            center.addObserver(forName: name, object: nil, queue: .main) { note in
+                guard
+                    let app = note.userInfo?[NSWorkspace.applicationUserInfoKey]
+                        as? NSRunningApplication,
+                    let id = app.bundleIdentifier,
+                    musicIds.contains(id)
+                else { return }
+                runningAppsLock.lock()
+                if isRunning {
+                    runningMusicApps.insert(id)
+                } else {
+                    runningMusicApps.remove(id)
+                }
+                runningAppsLock.unlock()
+            }
         }
     }
 
-    /// Executes the provided AppleScript and returns the trimmed result.
-    @discardableResult
-    static func runAppleScript(_ script: String) -> String? {
-        guard let appleScript = NSAppleScript(source: script) else {
+    /// Checks if the specified music application is currently running.
+    static func isAppRunning(_ app: MusicApp) -> Bool {
+        runningAppsLock.lock()
+        defer { runningAppsLock.unlock() }
+        return runningMusicApps.contains(app.bundleId)
+    }
+
+    // MARK: - Compiled script cache
+
+    /// Serial queue owning every `NSAppleScript` interaction.
+    ///
+    /// `NSAppleScript` is not thread-safe, and the cache below is shared mutable
+    /// state that polls, popup refreshes and playback commands all reach for. All
+    /// AppleScript work is funnelled through here so it stays single-threaded.
+    static let scriptQueue = DispatchQueue(
+        label: "com.barik-enhanced.applescript", qos: .userInitiated)
+
+    /// Compiled polling scripts, keyed by source.
+    ///
+    /// The polling scripts are fixed strings (4 variants: Music/Spotify ×
+    /// brief/full), but `NSAppleScript` re-parses and re-compiles from source on
+    /// every `executeAndReturnError` against a fresh instance — `OSACompile` /
+    /// `ASCompile` / `TASParser::Parse` showed up on every single poll. Compiling
+    /// once and reusing removes that entirely.
+    ///
+    /// Only ever touched from `scriptQueue`.
+    private static var compiledScripts: [String: NSAppleScript] = [:]
+
+    /// Returns a compiled, cached script for `source`, compiling on first use.
+    /// Must be called on `scriptQueue`.
+    private static func cachedScript(for source: String) -> NSAppleScript? {
+        if let existing = compiledScripts[source] { return existing }
+        guard let script = NSAppleScript(source: source) else { return nil }
+        var compileError: NSDictionary?
+        guard script.compileAndReturnError(&compileError) else {
+            print("AppleScript compile error: \(compileError ?? [:])")
             return nil
         }
+        compiledScripts[source] = script
+        return script
+    }
+
+    /// Executes the provided AppleScript and returns the trimmed result.
+    ///
+    /// - Parameter cached: reuse a compiled instance keyed by source. Safe only
+    ///   for scripts with a fixed source; commands that interpolate a value
+    ///   (seek position, shuffle state, …) must pass `false` or they'd populate
+    ///   the cache with an unbounded number of one-shot entries.
+    @discardableResult
+    static func runAppleScript(_ script: String, cached: Bool = false) -> String? {
+        dispatchPrecondition(condition: .onQueue(scriptQueue))
+        let appleScript: NSAppleScript?
+        if cached {
+            appleScript = cachedScript(for: script)
+        } else {
+            appleScript = NSAppleScript(source: script)
+        }
+        guard let appleScript else { return nil }
         var error: NSDictionary?
         let outputDescriptor = appleScript.executeAndReturnError(&error)
         if let error = error {
@@ -354,29 +460,43 @@ final class NowPlayingProvider {
         MusicApp.allCases.first { isAppRunning($0) }
     }
 
+    /// Whether any supported player is running. Reads the cache, so the idle
+    /// case costs a set lookup rather than a walk of every running application.
+    static func anyMusicAppRunning() -> Bool {
+        runningAppsLock.lock()
+        defer { runningAppsLock.unlock() }
+        return !runningMusicApps.isEmpty
+    }
+
     /// Executes a playback command for the first running music application.
-    static func executeCommand(_ command: (MusicApp) -> String) {
+    ///
+    /// Dispatched onto `scriptQueue`: these are fired from button handlers on the
+    /// main thread, and an Apple Event round-trip has no business blocking it.
+    static func executeCommand(_ command: @escaping (MusicApp) -> String) {
         guard let activeApp = activeMusicApp() else { return }
-        _ = runAppleScript(command(activeApp))
+        scriptQueue.async { _ = runAppleScript(command(activeApp)) }
     }
 
     /// Executes a playback command targeting a specific app by name.
     /// Preferred over `executeCommand` so a command lands on the app the song
     /// actually belongs to (e.g. seeking Music even if Spotify is also open).
-    static func executeCommand(on appName: String, _ command: (MusicApp) -> String) {
+    static func executeCommand(
+        on appName: String, _ command: @escaping (MusicApp) -> String
+    ) {
         guard let app = MusicApp(rawValue: appName) else { return }
-        _ = runAppleScript(command(app))
+        scriptQueue.async { _ = runAppleScript(command(app)) }
     }
 
     /// Brings the given (or first running) music app to the foreground.
     static func activateApp(named appName: String?) {
-        let name = appName ?? activeMusicApp()?.rawValue
-        guard let name,
-            let app = NSWorkspace.shared.runningApplications.first(where: {
-                $0.localizedName == name
+        guard let app = appName.flatMap(MusicApp.init(rawValue:)) ?? activeMusicApp()
+        else { return }
+        guard
+            let running = NSWorkspace.shared.runningApplications.first(where: {
+                $0.bundleIdentifier == app.bundleId
             })
         else { return }
-        app.activate(options: [.activateAllWindows])
+        running.activate(options: [.activateAllWindows])
     }
 }
 
@@ -415,6 +535,7 @@ final class NowPlayingManager: ObservableObject, ConditionallyActivatableWidget 
     private var immediateRefreshWork: DispatchWorkItem?
 
     private init() {
+        NowPlayingProvider.startTrackingRunningApps()
         setupNotifications()
         // For now, always activate to ensure widgets work
         activate()
@@ -537,7 +658,16 @@ final class NowPlayingManager: ObservableObject, ConditionallyActivatableWidget 
         // Only fetch the extra favorite/shuffle/repeat fields when the popup is
         // showing them; the menu bar doesn't need them.
         let full = popupVisible
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        // No music app open means there is nothing to ask and no Apple Event to
+        // send — skip the whole round-trip rather than scripting our way to "stopped".
+        guard NowPlayingProvider.anyMusicAppRunning() else {
+            if nowPlaying != nil { nowPlaying = nil }
+            if accentColor != .white { accentColor = .white }
+            finishLoading()
+            return
+        }
+        // Runs on the serial AppleScript queue — see NowPlayingProvider.scriptQueue.
+        NowPlayingProvider.scriptQueue.async { [weak self] in
             let song = NowPlayingProvider.fetchNowPlaying(full: full)
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -724,7 +854,7 @@ final class NowPlayingManager: ObservableObject, ConditionallyActivatableWidget 
 
     /// Runs a command against the current song's app when known, else the first
     /// running player.
-    private func runAppCommand(_ command: (MusicApp) -> String) {
+    private func runAppCommand(_ command: @escaping (MusicApp) -> String) {
         if let appName = nowPlaying?.appName {
             NowPlayingProvider.executeCommand(on: appName, command)
         } else {

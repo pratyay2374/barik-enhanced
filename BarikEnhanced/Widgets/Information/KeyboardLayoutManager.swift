@@ -66,7 +66,9 @@ class KeyboardLayoutManager: ObservableObject {
         }
         
         DispatchQueue.main.async {
-            self.availableInputSources = sourceNames
+            if self.availableInputSources != sourceNames {
+                self.availableInputSources = sourceNames
+            }
         }
         
         updateCurrentInputSource()

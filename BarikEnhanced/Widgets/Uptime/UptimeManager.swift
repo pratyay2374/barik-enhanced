@@ -50,7 +50,9 @@ final class UptimeManager: ObservableObject {
 
         DispatchQueue.main.async {
             if self.uptimeString != newString { self.uptimeString = newString }
-            self.bootDate = boot
+            // Boot date is fixed for the life of the session; assigning it
+            // unconditionally published a change every tick for no reason.
+            if self.bootDate != boot { self.bootDate = boot }
         }
     }
 }

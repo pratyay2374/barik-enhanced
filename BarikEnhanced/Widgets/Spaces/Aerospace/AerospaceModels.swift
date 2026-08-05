@@ -38,11 +38,17 @@ struct AeroSpace: SpaceModel {
 
     enum CodingKeys: String, CodingKey {
         case workspace
+        case isFocused = "workspace-is-focused"
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         workspace = try container.decode(String.self, forKey: .workspace)
+        // Present when the caller requested the `workspace-is-focused` format
+        // field; absent for plain `--json` queries, which still default to false
+        // and get their focus flag assigned by the caller.
+        isFocused =
+            try container.decodeIfPresent(Bool.self, forKey: .isFocused) ?? false
     }
 
     init(workspace: String, isFocused: Bool = false, windows: [AeroWindow] = [])
