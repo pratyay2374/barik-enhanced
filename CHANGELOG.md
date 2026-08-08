@@ -2,8 +2,28 @@
 
 ## Unreleased
 
+## 1.5.0
+
+### New
+
+- **Unified "AI Agent Usage" widget**: Replaces the separate Claude Usage, Codex Usage, and OpenCode widgets with a single widget covering Claude Code, Codex, OpenCode, and Cursor. Compact agent switcher → account picker → detail view, with an overview mode showing every agent's usage at a glance and a warning banner when one is approaching its limit.
+  - **Multiple accounts per agent**: Claude Code now supports real multiple accounts (add/rename/remove/sign-in-again), each with its own Keychain-stored OAuth tokens. Existing single-account logins migrate in place automatically.
+  - **Codex** accounts are tracked as remembered local logins (OpenAI has no free usage-check endpoint, so only the account currently logged into the Codex CLI shows live data — others prompt to switch via `codex login`).
+  - **OpenCode** folds into the same architecture with no change to how its usage is read.
+  - **Cursor** is wired in as a selectable agent that honestly reports "usage isn't available yet" — no data source exists for it yet, so nothing is faked.
+  - Redesigned UI: rounded "island" cards replace hairline dividers, a sliding-pill agent switcher, tinted brand icons, hover/press feedback, and small usage rings in overview mode.
+  - Existing configs migrate automatically: the old `default.claude-usage`/`default.codex-usage`/`default.opencode-usage` widget entries and their saved thresholds carry over to the new `default.agent-usage` widget on next launch.
+
 ### Bug Fixes
+
+- **Codex Usage: rate-limit data silently dropped**: OpenAI's backend sometimes sends `credits.balance` as a JSON string (e.g. `"0"`) instead of a number. The strict `Double` decode this hit was nested under a single `try?`, so one bad field silently discarded the *entire* rate-limit snapshot — the widget looked like it had no usage data even when a valid one was sitting in the session log. Now accepts either a number or a numeric string.
+- **Codex Usage: account list could stay empty**: if `auth.json` didn't yield a `chatgpt_account_id`/`chatgpt_user_id` fingerprint, the widget never registered an account to show, so it got stuck on an empty "no accounts yet" screen even while signed in and connected. Falls back to a local placeholder account so real usage still displays.
 - **Codex Usage widget: excessive CPU use**: Refreshes now coalesce overlapping scans and read only the latest 20 session transcripts, using the final 512 KB of each transcript. This avoids repeatedly parsing the full Codex history, which can contain very large JSONL session files. (Pulled in from upstream `MateoCerquetella/barik-enhanced@6ef80f1`.)
+- **Claude Usage widget: overlapping refreshes**: Refresh requests now coalesce instead of overlapping under rapid wake/reload triggers.
+
+### Performance
+
+- **Cut idle CPU across widgets**: fewer redundant SwiftUI redraws, moved Wi-Fi (CoreWLAN) reads off the main thread, cached and serialized Now Playing AppleScript execution instead of recompiling/re-dispatching it every poll, matched Now Playing players by bundle identifier, folded a redundant AeroSpace CLI call into the main listing, and backed off the Spaces poll timer once AeroSpace's event hook proves reliable.
 
 ## 1.4.2
 
