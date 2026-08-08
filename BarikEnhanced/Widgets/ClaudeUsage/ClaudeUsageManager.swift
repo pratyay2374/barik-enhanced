@@ -40,164 +40,204 @@ private struct UsageResponse: Codable {
 }
 
 // MARK: - Manager
-
+//
+// Supports multiple Claude accounts. Each account is Barik's own OAuth token
+// set, stored as its own Keychain item (same service, keyed by `kSecAttrAccount`
+// = accountID), so reads never prompt and accounts don't collide. A legacy
+// single-account item (saved before multi-account support, with an empty
+// account attribute) is migrated in place the first time it's found.
 @MainActor
 final class ClaudeUsageManager: ObservableObject {
     static let shared = ClaudeUsageManager()
 
-    /// Where we are in the sign-in lifecycle. Drives which view the popup shows.
-    enum AuthPhase {
-        case signedOut     // no tokens — show "Sign in with Claude"
+    /// Sign-in lifecycle for the "add account" flow. Independent from any
+    /// individual account's live/dead state — see `AccountRecord.authRequired`.
+    enum AddAccountPhase {
+        case idle
         case awaitingCode  // browser opened — show the paste-code field
-        case signedIn      // tokens present — show usage / loading / error
     }
 
-    @Published private(set) var usageData = ClaudeUsageData()
-    @Published private(set) var authPhase: AuthPhase = .signedOut
-    @Published private(set) var isAuthenticating = false
-    @Published private(set) var fetchFailed: Bool = false
-    @Published private(set) var errorMessage: String?
-
-    /// Convenience for existing call sites / views.
-    var isConnected: Bool { authPhase == .signedIn }
-
-    private var refreshTimer: Timer?
-    private var recoveryTask: Task<Void, Never>?
-    private var currentConfig: ConfigData = [:]
-
-    /// The OAuth tokens Barik obtained for itself. Stored in a keychain item we
-    /// own (see load/save/clearTokens), so reads never prompt.
     private struct Tokens {
         var accessToken: String
         var refreshToken: String?
         var expiresAt: Date?
         var plan: String
 
-        /// True when the access token is at/near expiry and should be refreshed
-        /// before the next API call. Unlike Claude Code's stored expiry, this
-        /// one is OUR own and reliable, so we can act on it.
         var needsRefresh: Bool {
             guard let expiresAt else { return false }
             return Date() >= expiresAt.addingTimeInterval(-120)
         }
     }
 
-    private var tokens: Tokens?
+    private struct AccountRecord {
+        var id: String
+        var label: String
+        var tokens: Tokens
+        var usageData = ClaudeUsageData()
+        var authRequired = false
+        var fetchFailed = false
+        var errorMessage: String?
+        var rateLimitUntil: Date?
+        var refreshTimer: Timer?
+    }
+
+    @Published private(set) var accountOrder: [String] = []
+    private var accountRecords: [String: AccountRecord] = [:] {
+        didSet { objectWillChange.send() }
+    }
+    @Published var selectedAccountID: String?
+
+    @Published private(set) var addAccountPhase: AddAccountPhase = .idle
+    @Published private(set) var isAuthenticating = false
+    @Published private(set) var addAccountError: String?
+
+    private var currentConfig: ConfigData = [:]
     private var pkce: ClaudeOAuth.PKCE?
+    /// Non-nil while re-authenticating an existing (dead-token) account rather
+    /// than adding a brand-new one.
+    private var reauthAccountID: String?
 
     private static let connectedKey = "claude-usage-connected"
+    private static let orderKey = "claude-usage-account-order"
     private static let refreshInterval: TimeInterval = 300
     private static let failedRetryInterval: TimeInterval = 120
     private static let maxBackoff: TimeInterval = 3600
-
-    /// Service name for OUR OWN keychain item holding Barik's OAuth tokens.
     private static let tokenStoreService = "com.barik.claude-usage-oauth"
 
-    /// When set, we're in a server-imposed rate-limit backoff and must not hit
-    /// the usage API again until this time.
-    private var rateLimitUntil: Date?
+    var hasAccounts: Bool { !accountOrder.isEmpty }
 
     private init() {
         NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didWakeNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in self?.handleWake() }
-        }
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in Task { @MainActor in self?.handleWake() } }
         NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.sessionDidBecomeActiveNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in self?.handleWake() }
-        }
+            forName: NSWorkspace.sessionDidBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in Task { @MainActor in self?.handleWake() } }
         NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.screensDidWakeNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in self?.handleWake() }
-        }
+            forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in Task { @MainActor in self?.handleWake() } }
         NotificationCenter.default.addObserver(
-            forName: Notification.Name("ManualReloadTriggered"),
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in self?.refresh() }
-        }
+            forName: Notification.Name("ManualReloadTriggered"), object: nil, queue: .main
+        ) { [weak self] _ in Task { @MainActor in self?.refreshAll() } }
     }
 
     // MARK: - Lifecycle
 
     func startUpdating(config: ConfigData) {
         currentConfig = config
-        if tokens == nil { tokens = loadTokens() }
-        if tokens != nil {
-            authPhase = .signedIn
-            UserDefaults.standard.set(true, forKey: Self.connectedKey)
-            fetchData()
-        } else {
-            authPhase = .signedOut
-            UserDefaults.standard.set(false, forKey: Self.connectedKey)
+        if accountRecords.isEmpty {
+            loadAccountsFromKeychain()
         }
+        if selectedAccountID == nil {
+            selectedAccountID = accountOrder.first
+        }
+        UserDefaults.standard.set(!accountOrder.isEmpty, forKey: Self.connectedKey)
+        for id in accountOrder { fetchData(accountID: id) }
     }
 
     func reconnectIfNeeded() {
-        // Never disturb an in-progress sign-in (the popup may have been
-        // reopened while the user is off in the browser).
-        guard authPhase != .awaitingCode else { return }
-        if tokens == nil { tokens = loadTokens() }
-        if tokens != nil {
-            authPhase = .signedIn
-            fetchData()
-        } else {
-            authPhase = .signedOut
+        guard addAccountPhase != .awaitingCode else { return }
+        if accountRecords.isEmpty {
+            loadAccountsFromKeychain()
+            if selectedAccountID == nil { selectedAccountID = accountOrder.first }
         }
+        for id in accountOrder { fetchData(accountID: id) }
     }
 
     func stopUpdating() {
-        refreshTimer?.invalidate()
-        refreshTimer = nil
-        recoveryTask?.cancel()
-        recoveryTask = nil
+        for id in accountOrder { accountRecords[id]?.refreshTimer?.invalidate() }
+    }
+
+    private func refreshAll() {
+        for id in accountOrder { refresh(accountID: id) }
     }
 
     /// The footer reload button and the loading/rate-limit paths.
-    func refresh() {
-        fetchFailed = false
-        errorMessage = nil
-        guard tokens != nil else { authPhase = .signedOut; return }
-        authPhase = .signedIn
-        fetchData()
+    func refresh(accountID: String) {
+        guard accountRecords[accountID] != nil else { return }
+        accountRecords[accountID]?.fetchFailed = false
+        accountRecords[accountID]?.errorMessage = nil
+        fetchData(accountID: accountID)
     }
 
-    /// The error view's "Retry" — same as refresh now that a truly dead token
-    /// is recovered by the automatic refresh-token flow inside `fetchData`.
-    func retry() {
-        refresh()
+    func retry(accountID: String) {
+        refresh(accountID: accountID)
+    }
+
+    // MARK: - Descriptor-facing read API
+
+    func accounts() -> [AgentAccount] {
+        accountOrder.compactMap { id in
+            guard let record = accountRecords[id] else { return nil }
+            return AgentAccount(
+                id: id,
+                label: record.label,
+                subtitle: record.usageData.isAvailable ? record.usageData.plan : nil
+            )
+        }
+    }
+
+    func snapshot(for accountID: String) -> AccountUsageState {
+        guard let record = accountRecords[accountID] else { return .unavailable(message: "No account selected.") }
+        if record.authRequired {
+            return .authRequired(message: "Your Claude session expired.")
+        }
+        if record.usageData.isAvailable {
+            let metrics = [
+                UsageMetric(
+                    id: "5h", icon: "clock", title: "5-Hour Window",
+                    percentage: record.usageData.fiveHourPercentage,
+                    subtitle: nil,
+                    resetDescription: record.usageData.fiveHourResetDate.map { "Resets in \(Self.resetTimeString($0))" }
+                ),
+                UsageMetric(
+                    id: "weekly", icon: "calendar", title: "Weekly",
+                    percentage: record.usageData.weeklyPercentage,
+                    subtitle: nil,
+                    resetDescription: record.usageData.weeklyResetDate.map { "Resets \(Self.resetTimeString($0))" }
+                ),
+            ]
+            return .available(AccountUsageSnapshot(
+                planLabel: record.usageData.plan,
+                metrics: metrics,
+                lastUpdated: record.usageData.lastUpdated
+            ))
+        }
+        if record.fetchFailed {
+            return .error(message: record.errorMessage ?? "The request failed.", lastUpdated: record.usageData.lastUpdated)
+        }
+        return .loading
     }
 
     // MARK: - Sign-in flow
 
-    /// Starts sign-in: opens the browser to the Claude authorization page and
-    /// switches the popup to the paste-code state.
-    func beginSignIn() {
+    /// Starts sign-in for a brand-new account.
+    func beginAddAccount() {
+        reauthAccountID = nil
+        startSignIn()
+    }
+
+    /// Re-authenticates an existing account whose token died.
+    func beginReauth(accountID: String) {
+        reauthAccountID = accountID
+        startSignIn()
+    }
+
+    private func startSignIn() {
         let session = ClaudeOAuth.makePKCE()
         pkce = session
-        errorMessage = nil
+        addAccountError = nil
         guard let url = ClaudeOAuth.authorizationURL(pkce: session) else {
-            errorMessage = "Couldn't build the sign-in URL."
+            addAccountError = "Couldn't build the sign-in URL."
             return
         }
         NSWorkspace.shared.open(url)
-        authPhase = .awaitingCode
+        addAccountPhase = .awaitingCode
     }
 
-    /// Re-opens the authorization page for the current sign-in attempt.
     func reopenSignInPage() {
         guard let session = pkce, let url = ClaudeOAuth.authorizationURL(pkce: session) else {
-            beginSignIn()
+            startSignIn()
             return
         }
         NSWorkspace.shared.open(url)
@@ -205,8 +245,9 @@ final class ClaudeUsageManager: ObservableObject {
 
     func cancelSignIn() {
         pkce = nil
-        errorMessage = nil
-        authPhase = tokens != nil ? .signedIn : .signedOut
+        reauthAccountID = nil
+        addAccountError = nil
+        addAccountPhase = .idle
     }
 
     /// Exchanges the pasted authorization code for tokens.
@@ -214,11 +255,11 @@ final class ClaudeUsageManager: ObservableObject {
         guard let session = pkce else { return }
         let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            errorMessage = "Paste the code shown on the sign-in page."
+            addAccountError = "Paste the code shown on the sign-in page."
             return
         }
         isAuthenticating = true
-        errorMessage = nil
+        addAccountError = nil
         Task {
             let result = await ClaudeOAuth.exchange(pastedCode: trimmed, pkce: session)
             self.isAuthenticating = false
@@ -226,81 +267,103 @@ final class ClaudeUsageManager: ObservableObject {
             case .success(let resp):
                 self.pkce = nil
                 let plan = self.currentConfig["plan"]?.stringValue ?? "pro"
-                let t = Tokens(
+                let tokens = Tokens(
                     accessToken: resp.accessToken,
                     refreshToken: resp.refreshToken,
                     expiresAt: resp.expiresAt,
                     plan: plan
                 )
-                self.tokens = t
-                self.saveTokens(t)
-                self.authPhase = .signedIn
+                if let existingID = self.reauthAccountID, var record = self.accountRecords[existingID] {
+                    record.tokens = tokens
+                    record.authRequired = false
+                    self.accountRecords[existingID] = record
+                    self.saveTokens(tokens, accountID: existingID, label: record.label)
+                    self.selectedAccountID = existingID
+                    self.fetchData(accountID: existingID)
+                } else {
+                    let newID = UUID().uuidString
+                    let label = "Account \(self.accountOrder.count + 1)"
+                    let record = AccountRecord(id: newID, label: label, tokens: tokens)
+                    self.accountRecords[newID] = record
+                    self.accountOrder.append(newID)
+                    self.persistAccountOrder()
+                    self.saveTokens(tokens, accountID: newID, label: label)
+                    self.selectedAccountID = newID
+                    self.fetchData(accountID: newID)
+                }
+                self.reauthAccountID = nil
+                self.addAccountPhase = .idle
                 UserDefaults.standard.set(true, forKey: Self.connectedKey)
-                self.fetchData()
 
             case .failure:
-                self.errorMessage = "Sign-in failed. Paste the full code from the page and try again."
-                // Stay in .awaitingCode so the user can re-paste.
+                self.addAccountError = "Sign-in failed. Paste the full code from the page and try again."
             }
         }
     }
 
-    /// Discards Barik's tokens and returns to the signed-out state.
-    func signOut() {
-        tokens = nil
-        pkce = nil
-        clearTokens()
-        rateLimitUntil = nil
-        usageData = ClaudeUsageData()
-        fetchFailed = false
-        errorMessage = nil
-        authPhase = .signedOut
-        UserDefaults.standard.set(false, forKey: Self.connectedKey)
-        refreshTimer?.invalidate()
-        refreshTimer = nil
+    // MARK: - Account management
+
+    func renameAccount(_ accountID: String, to newLabel: String) {
+        let trimmed = newLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, var record = accountRecords[accountID] else { return }
+        record.label = trimmed
+        accountRecords[accountID] = record
+        saveTokens(record.tokens, accountID: accountID, label: trimmed)
+    }
+
+    /// Discards one account's tokens (Claude has no meaningful "sign out but
+    /// keep remembered" state — signing out and removing are the same thing).
+    func removeAccount(_ accountID: String) {
+        accountRecords[accountID]?.refreshTimer?.invalidate()
+        accountRecords.removeValue(forKey: accountID)
+        accountOrder.removeAll { $0 == accountID }
+        persistAccountOrder()
+        clearTokens(accountID: accountID)
+        if selectedAccountID == accountID {
+            selectedAccountID = accountOrder.first
+        }
+        UserDefaults.standard.set(!accountOrder.isEmpty, forKey: Self.connectedKey)
     }
 
     // MARK: - Refresh scheduling
 
     private func handleWake() {
-        guard tokens != nil, authPhase == .signedIn else { return }
-        recoveryTask?.cancel()
-        fetchData()
+        for id in accountOrder where !(accountRecords[id]?.authRequired ?? true) {
+            fetchData(accountID: id)
+        }
     }
 
-    private func scheduleNextFetch(after interval: TimeInterval) {
-        refreshTimer?.invalidate()
+    private func scheduleNextFetch(accountID: String, after interval: TimeInterval) {
+        accountRecords[accountID]?.refreshTimer?.invalidate()
         let delay = max(interval, 1)
         let timer = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
-            Task { @MainActor in self?.fetchData() }
+            Task { @MainActor in self?.fetchData(accountID: accountID) }
         }
         timer.tolerance = min(delay * 0.1, 30)
         RunLoop.main.add(timer, forMode: .common)
-        refreshTimer = timer
+        accountRecords[accountID]?.refreshTimer = timer
     }
 
     // MARK: - Data Fetching
 
-    private func fetchData() {
-        guard tokens != nil else { return }
+    private func fetchData(accountID: String) {
+        guard let record = accountRecords[accountID] else { return }
 
-        // Honor an active rate-limit backoff instead of hitting the API again.
-        if let until = rateLimitUntil, Date() < until {
-            fetchFailed = true
-            errorMessage = rateLimitMessage(until: until)
-            scheduleNextFetch(after: until.timeIntervalSinceNow)
+        if let until = record.rateLimitUntil, Date() < until {
+            accountRecords[accountID]?.fetchFailed = true
+            accountRecords[accountID]?.errorMessage = rateLimitMessage(until: until)
+            scheduleNextFetch(accountID: accountID, after: until.timeIntervalSinceNow)
             return
         }
 
-        Task { await performFetch() }
+        Task { await performFetch(accountID: accountID) }
     }
 
-    private func performFetch() async {
-        guard var current = tokens else { return }
+    private func performFetch(accountID: String) async {
+        guard var current = accountRecords[accountID]?.tokens else { return }
 
-        // Proactively refresh a soon-to-expire token — silent, no browser.
         if current.needsRefresh, let rt = current.refreshToken,
-           let refreshed = await performRefresh(refreshToken: rt) {
+           let refreshed = await performRefresh(refreshToken: rt, accountID: accountID) {
             current = refreshed
         }
 
@@ -309,55 +372,49 @@ final class ClaudeUsageManager: ObservableObject {
 
         switch result {
         case .success(let response):
-            apply(response: response, plan: plan)
-            rateLimitUntil = nil
-            fetchFailed = false
-            errorMessage = nil
-            scheduleNextFetch(after: Self.refreshInterval)
+            apply(response: response, plan: plan, accountID: accountID)
+            accountRecords[accountID]?.rateLimitUntil = nil
+            accountRecords[accountID]?.fetchFailed = false
+            accountRecords[accountID]?.errorMessage = nil
+            scheduleNextFetch(accountID: accountID, after: Self.refreshInterval)
 
         case .unauthorized:
-            // Access token was rejected. Try one silent refresh + re-fetch
-            // before making the user sign in again.
             if let rt = current.refreshToken,
-               let refreshed = await performRefresh(refreshToken: rt) {
+               let refreshed = await performRefresh(refreshToken: rt, accountID: accountID) {
                 let retry = await fetchUsageWithRetry(token: refreshed.accessToken)
                 if case .success(let response) = retry {
-                    apply(response: response, plan: plan)
-                    rateLimitUntil = nil
-                    fetchFailed = false
-                    errorMessage = nil
-                    scheduleNextFetch(after: Self.refreshInterval)
+                    apply(response: response, plan: plan, accountID: accountID)
+                    accountRecords[accountID]?.rateLimitUntil = nil
+                    accountRecords[accountID]?.fetchFailed = false
+                    accountRecords[accountID]?.errorMessage = nil
+                    scheduleNextFetch(accountID: accountID, after: Self.refreshInterval)
                     return
                 }
             }
-            // Refresh unavailable or also rejected — require a fresh sign-in.
-            tokens = nil
-            clearTokens()
-            usageData = ClaudeUsageData()
-            fetchFailed = false
-            errorMessage = nil
-            authPhase = .signedOut
-            UserDefaults.standard.set(false, forKey: Self.connectedKey)
-            refreshTimer?.invalidate()
-            refreshTimer = nil
+            // Refresh unavailable or also rejected — this account needs sign-in again.
+            accountRecords[accountID]?.authRequired = true
+            accountRecords[accountID]?.usageData = ClaudeUsageData()
+            accountRecords[accountID]?.fetchFailed = false
+            accountRecords[accountID]?.errorMessage = nil
+            accountRecords[accountID]?.refreshTimer?.invalidate()
 
         case .rateLimited(let retryAfter):
             let delay = min(max(TimeInterval(retryAfter), Self.refreshInterval), Self.maxBackoff)
             let until = Date().addingTimeInterval(delay)
-            rateLimitUntil = until
-            fetchFailed = true
-            errorMessage = rateLimitMessage(until: until)
-            scheduleNextFetch(after: delay)
+            accountRecords[accountID]?.rateLimitUntil = until
+            accountRecords[accountID]?.fetchFailed = true
+            accountRecords[accountID]?.errorMessage = rateLimitMessage(until: until)
+            scheduleNextFetch(accountID: accountID, after: delay)
 
         case .failed:
-            rateLimitUntil = nil
-            fetchFailed = true
-            errorMessage = "The request failed. Check your connection and try again."
-            scheduleNextFetch(after: Self.failedRetryInterval)
+            accountRecords[accountID]?.rateLimitUntil = nil
+            accountRecords[accountID]?.fetchFailed = true
+            accountRecords[accountID]?.errorMessage = "The request failed. Check your connection and try again."
+            scheduleNextFetch(accountID: accountID, after: Self.failedRetryInterval)
         }
     }
 
-    private func apply(response: UsageResponse, plan: String) {
+    private func apply(response: UsageResponse, plan: String, accountID: String) {
         let isoFormatter = ISO8601DateFormatter()
         isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
 
@@ -373,26 +430,40 @@ final class ClaudeUsageManager: ObservableObject {
         data.plan = plan.capitalized
         data.lastUpdated = Date()
         data.isAvailable = true
-        usageData = data
+        accountRecords[accountID]?.usageData = data
     }
 
-    /// Refreshes the access token and persists the result. Returns the new
-    /// tokens on success, nil on failure (caller decides whether to sign out).
-    private func performRefresh(refreshToken: String) async -> Tokens? {
+    private func performRefresh(refreshToken: String, accountID: String) async -> Tokens? {
         let result = await ClaudeOAuth.refresh(refreshToken: refreshToken)
         guard case .success(let resp) = result else { return nil }
-        var updated = tokens ?? Tokens(accessToken: resp.accessToken, refreshToken: resp.refreshToken, expiresAt: resp.expiresAt, plan: "pro")
+        guard var updated = accountRecords[accountID]?.tokens else { return nil }
         updated.accessToken = resp.accessToken
         if let rt = resp.refreshToken { updated.refreshToken = rt }
         updated.expiresAt = resp.expiresAt
-        tokens = updated
-        saveTokens(updated)
+        accountRecords[accountID]?.tokens = updated
+        saveTokens(updated, accountID: accountID, label: accountRecords[accountID]?.label ?? "Account")
         return updated
     }
 
     private func rateLimitMessage(until: Date) -> String {
         let minutes = max(1, Int(ceil(until.timeIntervalSinceNow / 60)))
         return "Claude is rate limiting usage checks. Retrying in about \(minutes) min."
+    }
+
+    private static func resetTimeString(_ date: Date) -> String {
+        let interval = date.timeIntervalSince(Date())
+        if interval <= 0 { return "soon" }
+        let hours = Int(interval) / 3600
+        let minutes = (Int(interval) % 3600) / 60
+        if hours > 24 {
+            let formatter = DateFormatter()
+            formatter.dateFormat = "E h:mm a"
+            return formatter.string(from: date)
+        } else if hours > 0 {
+            return "\(hours)h \(minutes)m"
+        } else {
+            return "\(minutes)m"
+        }
     }
 
     // MARK: - Usage API
@@ -456,12 +527,13 @@ final class ClaudeUsageManager: ObservableObject {
         }
     }
 
-    // MARK: - Token store (our own keychain item)
+    // MARK: - Token store (our own keychain items, one per account)
 
-    private func saveTokens(_ t: Tokens) {
+    private func saveTokens(_ t: Tokens, accountID: String, label: String) {
         var payload: [String: Any] = [
             "accessToken": t.accessToken,
             "plan": t.plan,
+            "label": label,
         ]
         if let rt = t.refreshToken { payload["refreshToken"] = rt }
         if let exp = t.expiresAt { payload["expiresAt"] = exp.timeIntervalSince1970 }
@@ -470,6 +542,7 @@ final class ClaudeUsageManager: ObservableObject {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: Self.tokenStoreService,
+            kSecAttrAccount as String: accountID,
         ]
         let attributes: [String: Any] = [
             kSecValueData as String: data,
@@ -484,34 +557,66 @@ final class ClaudeUsageManager: ObservableObject {
         }
     }
 
-    private func loadTokens() -> Tokens? {
+    /// Loads every account stored under our service, migrating the legacy
+    /// single-account item (empty `kSecAttrAccount`, predates multi-account
+    /// support) to a real account id in place.
+    private func loadAccountsFromKeychain() {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: Self.tokenStoreService,
+            kSecMatchLimit as String: kSecMatchLimitAll,
+            kSecReturnAttributes as String: true,
             kSecReturnData as String: true,
-            // Never present UI for this read. On a stably-signed release build
-            // it returns our token silently; on an ad-hoc debug build whose
-            // identity isn't on the ACL it fails silently → sign-in screen.
             kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail,
         ]
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess,
-              let data = result as? Data,
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let accessToken = json["accessToken"] as? String else {
-            return nil
+        guard status == errSecSuccess, let items = result as? [[String: Any]] else { return }
+
+        let savedOrder = UserDefaults.standard.stringArray(forKey: Self.orderKey) ?? []
+        var loaded: [String: AccountRecord] = [:]
+
+        for item in items {
+            guard let data = item[kSecAttrGeneric as String] as? Data ?? item[kSecValueData as String] as? Data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let accessToken = json["accessToken"] as? String else { continue }
+
+            let refreshToken = json["refreshToken"] as? String
+            let plan = json["plan"] as? String ?? "pro"
+            let expiresAt = (json["expiresAt"] as? Double).map { Date(timeIntervalSince1970: $0) }
+            let tokens = Tokens(accessToken: accessToken, refreshToken: refreshToken, expiresAt: expiresAt, plan: plan)
+
+            let rawAccountID = item[kSecAttrAccount as String] as? String ?? ""
+            let label = json["label"] as? String ?? "Personal"
+
+            if rawAccountID.isEmpty {
+                // Legacy single-account item — migrate to a stable id.
+                let newID = UUID().uuidString
+                saveTokens(tokens, accountID: newID, label: label)
+                clearTokens(accountID: "")
+                loaded[newID] = AccountRecord(id: newID, label: label, tokens: tokens)
+            } else {
+                loaded[rawAccountID] = AccountRecord(id: rawAccountID, label: label, tokens: tokens)
+            }
         }
-        let refreshToken = json["refreshToken"] as? String
-        let plan = json["plan"] as? String ?? "pro"
-        let expiresAt = (json["expiresAt"] as? Double).map { Date(timeIntervalSince1970: $0) }
-        return Tokens(accessToken: accessToken, refreshToken: refreshToken, expiresAt: expiresAt, plan: plan)
+
+        accountRecords = loaded
+        // Preserve remembered order where possible, then append any unordered ids.
+        var order = savedOrder.filter { loaded[$0] != nil }
+        for id in loaded.keys where !order.contains(id) { order.append(id) }
+        accountOrder = order
+        persistAccountOrder()
     }
 
-    private func clearTokens() {
+    private func persistAccountOrder() {
+        UserDefaults.standard.set(accountOrder, forKey: Self.orderKey)
+    }
+
+    private func clearTokens(accountID: String) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: Self.tokenStoreService,
+            kSecAttrAccount as String: accountID,
         ]
         SecItemDelete(query as CFDictionary)
     }

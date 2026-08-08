@@ -281,16 +281,12 @@ struct MenuBarView: View {
             KeyboardLayoutWidget()
                 .environmentObject(config)
 
-        case "default.claude-usage":
-            ClaudeUsageWidget()
-                .environmentObject(config)
-
-        case "default.codex-usage":
-            CodexUsageWidget()
-                .environmentObject(config)
-
-        case "default.opencode-usage":
-            OpenCodeUsageWidget()
+        case "default.agent-usage",
+             "default.claude-usage", "default.codex-usage", "default.opencode-usage":
+            // The three legacy ids are kept as a safety net for configs the
+            // one-time migration in ConfigManager might miss — they all map
+            // to the same unified widget now.
+            AgentUsageWidget()
                 .environmentObject(config)
 
         case "default.countdown":
