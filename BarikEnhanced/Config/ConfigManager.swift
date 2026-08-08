@@ -40,9 +40,101 @@ final class ConfigManager: ObservableObject {
 
         if let path = chosenPath {
             configFilePath = path
+            migrateLegacyAgentUsageWidgetsIfNeeded(at: path)
             parseConfigFile(at: path)
             startWatchingFile(at: path)
         }
+    }
+
+    // MARK: - One-time migration: 3 legacy usage widgets → unified "AI Agent Usage"
+    //
+    // Replaces the first legacy id found in `displayed` with the new unified
+    // widget id, drops any other legacy ids (so users who'd added more than
+    // one of the old widgets don't end up with duplicates), and best-effort
+    // carries each legacy widget's saved thresholds into the new nested keys.
+    // Runs directly on the raw TOML text — same style as `toggleWidget`/
+    // `replaceDisplayedWidgets` elsewhere in this file — so it works before
+    // the file has been parsed into `RootToml` for the first time.
+
+    private static let legacyAgentUsageIDs = ["default.claude-usage", "default.codex-usage", "default.opencode-usage"]
+    private static let legacyAgentUsageProviderKeys = [
+        ("default.claude-usage", "claude"),
+        ("default.codex-usage", "codex"),
+        ("default.opencode-usage", "opencode"),
+    ]
+
+    private func migrateLegacyAgentUsageWidgetsIfNeeded(at path: String) {
+        guard let content = try? String(contentsOfFile: path, encoding: .utf8) else { return }
+        guard Self.legacyAgentUsageIDs.contains(where: { content.contains($0) }) else { return }
+
+        var lines = content.components(separatedBy: "\n")
+        if let range = displayedArrayLineRange(in: lines) {
+            var seenUnified = false
+            var newArrayLines: [String] = []
+            for line in lines[range] {
+                if let matchedLegacyID = Self.legacyAgentUsageIDs.first(where: { line.contains("\"\($0)\"") }) {
+                    if !seenUnified {
+                        newArrayLines.append(line.replacingOccurrences(of: "\"\(matchedLegacyID)\"", with: "\"default.agent-usage\""))
+                        seenUnified = true
+                    }
+                    continue  // drop duplicate legacy entries
+                }
+                newArrayLines.append(line)
+            }
+            lines.replaceSubrange(range, with: newArrayLines)
+        }
+
+        let updatedContent = lines.joined(separator: "\n")
+        try? updatedContent.write(toFile: path, atomically: true, encoding: .utf8)
+
+        for (legacyID, providerKey) in Self.legacyAgentUsageProviderKeys {
+            if let warning = extractThresholdValue(key: "warning-threshold", table: "widgets.\(legacyID)", in: updatedContent) {
+                updateConfigValue(key: "widgets.default.agent-usage.\(providerKey).warning-threshold", newValue: warning, wrapInQuotes: false)
+            }
+            if let critical = extractThresholdValue(key: "critical-threshold", table: "widgets.\(legacyID)", in: updatedContent) {
+                updateConfigValue(key: "widgets.default.agent-usage.\(providerKey).critical-threshold", newValue: critical, wrapInQuotes: false)
+            }
+        }
+    }
+
+    private func displayedArrayLineRange(in lines: [String]) -> ClosedRange<Int>? {
+        var startIndex: Int?
+        var endIndex: Int?
+        var bracketCount = 0
+
+        for (i, line) in lines.enumerated() {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("displayed") && trimmed.contains("[") {
+                startIndex = i
+                bracketCount = trimmed.filter({ $0 == "[" }).count - trimmed.filter({ $0 == "]" }).count
+                if bracketCount <= 0 { endIndex = i; break }
+            } else if startIndex != nil && endIndex == nil {
+                bracketCount += trimmed.filter({ $0 == "[" }).count - trimmed.filter({ $0 == "]" }).count
+                if bracketCount <= 0 { endIndex = i; break }
+            }
+        }
+        guard let start = startIndex, let end = endIndex else { return nil }
+        return start...end
+    }
+
+    private func extractThresholdValue(key: String, table: String, in content: String) -> String? {
+        let tableHeader = "[\(table)]"
+        var insideTable = false
+        for line in content.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("[") && trimmed.hasSuffix("]") {
+                insideTable = (trimmed == tableHeader)
+                continue
+            }
+            guard insideTable else { continue }
+            let pattern = "^\(NSRegularExpression.escapedPattern(for: key))\\s*=\\s*(.+)$"
+            guard let match = trimmed.range(of: pattern, options: .regularExpression) else { continue }
+            let assignment = String(trimmed[match])
+            if let eq = assignment.firstIndex(of: "=") {
+                return assignment[assignment.index(after: eq)...].trimmingCharacters(in: .whitespaces)
+            }
+        }
+        return nil
     }
 
     func reloadConfig() {
@@ -129,11 +221,15 @@ final class ConfigManager: ObservableObject {
             show-label = false
             label = "Reload"
 
-            [widgets.default.claude-usage]
+            [widgets.default.agent-usage.claude]
             warning-threshold = 60
             critical-threshold = 80
 
-            [widgets.default.codex-usage]
+            [widgets.default.agent-usage.codex]
+            warning-threshold = 60
+            critical-threshold = 80
+
+            [widgets.default.agent-usage.opencode]
             warning-threshold = 60
             critical-threshold = 80
 

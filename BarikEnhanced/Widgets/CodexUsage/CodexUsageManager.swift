@@ -3,6 +3,7 @@ import SwiftUI
 
 private let codexUsageAccountFingerprintKey = "codex-usage-account-fingerprint"
 private let codexUsageAcceptedRefreshKey = "codex-usage-accepted-auth-refresh"
+private let codexUsageRememberedAccountsKey = "codex-usage-remembered-accounts"
 
 // MARK: - Data Models
 
@@ -19,6 +20,18 @@ struct CodexUsageData {
     var lastUpdated: Date = Date()
     var lastActivityDate: Date?
     var isAvailable: Bool = false
+    /// The locally-logged-in account this snapshot belongs to, when known —
+    /// used to remember/label Codex accounts across `codex login` switches.
+    var accountFingerprint: String?
+}
+
+/// A Codex account Barik has seen locally logged in before. Codex's CLI only
+/// ever holds one active login at a time, so this is bookkeeping/labeling —
+/// not an independent credential Barik holds (see `CodexUsageManager`).
+struct CodexRememberedAccount: Identifiable, Equatable, Codable {
+    var id: String { fingerprint }
+    let fingerprint: String
+    var label: String
 }
 
 private struct CodexSessionEvent: Decodable {
@@ -72,6 +85,23 @@ private struct CodexSessionEvent: Decodable {
             case unlimited
             case balance
         }
+
+        // The backend has been observed sending `balance` as a numeric string
+        // (e.g. "0") rather than a JSON number. A strict Double decode would
+        // throw and silently kill the *entire* rate-limit event (this struct
+        // is nested several levels deep under a `try?`), so accept either.
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            hasCredits = try container.decodeIfPresent(Bool.self, forKey: .hasCredits)
+            unlimited = try container.decodeIfPresent(Bool.self, forKey: .unlimited)
+            if let doubleValue = try? container.decodeIfPresent(Double.self, forKey: .balance) {
+                balance = doubleValue
+            } else if let stringValue = try? container.decodeIfPresent(String.self, forKey: .balance) {
+                balance = Double(stringValue)
+            } else {
+                balance = nil
+            }
+        }
     }
 }
 
@@ -114,6 +144,15 @@ final class CodexUsageManager: ObservableObject {
     @Published private(set) var isConnected: Bool = false
     @Published private(set) var fetchFailed: Bool = false
 
+    /// Every Codex account Barik has ever seen locally logged in, most-recent
+    /// first-seen order preserved. Only `activeFingerprint`'s entry ever shows
+    /// live usage — see `snapshot(for:)`.
+    @Published private(set) var rememberedAccounts: [CodexRememberedAccount] = []
+    @Published private(set) var activeFingerprint: String?
+    /// The account the unified widget is currently *viewing* — independent of
+    /// which one is actually logged in locally.
+    @Published var selectedFingerprint: String?
+
     private var refreshTimer: Timer?
     private var recoveryTask: Task<Void, Never>?
     private var isFetching = false
@@ -122,6 +161,8 @@ final class CodexUsageManager: ObservableObject {
     private static let refreshInterval: TimeInterval = 60
 
     private init() {
+        loadRememberedAccounts()
+        selectedFingerprint = rememberedAccounts.first?.fingerprint
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification,
             object: nil,
@@ -215,18 +256,21 @@ final class CodexUsageManager: ObservableObject {
                 self.isConnected = false
                 self.fetchFailed = false
                 self.usageData = CodexUsageData()
+                self.activeFingerprint = nil
                 self.stopUpdating()
 
             case .connectedWithoutSnapshot(let data):
                 self.isConnected = true
                 self.fetchFailed = false
                 self.usageData = data
+                self.registerActiveAccount(fingerprint: data.accountFingerprint)
                 self.scheduleRefreshTimer()
 
             case .connected(let data):
                 self.isConnected = true
                 self.fetchFailed = false
                 self.usageData = data
+                self.registerActiveAccount(fingerprint: data.accountFingerprint)
                 self.scheduleRefreshTimer()
 
             case .failed:
@@ -234,6 +278,123 @@ final class CodexUsageManager: ObservableObject {
                 self.fetchFailed = true
                 self.scheduleRefreshTimer()
             }
+        }
+    }
+
+    // MARK: - Remembered accounts (bookkeeping only — Codex holds no credentials here)
+
+    private func loadRememberedAccounts() {
+        guard let data = UserDefaults.standard.data(forKey: codexUsageRememberedAccountsKey),
+              let decoded = try? JSONDecoder().decode([CodexRememberedAccount].self, from: data) else { return }
+        rememberedAccounts = decoded
+    }
+
+    private func saveRememberedAccounts() {
+        guard let data = try? JSONEncoder().encode(rememberedAccounts) else { return }
+        UserDefaults.standard.set(data, forKey: codexUsageRememberedAccountsKey)
+    }
+
+    /// Sentinel used whenever Codex's local `auth.json` doesn't yield a real
+    /// `chatgpt_account_id`/`chatgpt_user_id` fingerprint (some CLI/backend
+    /// versions omit those claims). The account concept here is bookkeeping,
+    /// not a credential — falling back to one fixed "local" entry keeps the
+    /// widget showing real usage instead of a perpetually empty account list.
+    private static let unknownAccountFingerprint = "local"
+
+    private func registerActiveAccount(fingerprint: String?) {
+        let resolved = (fingerprint?.isEmpty == false) ? fingerprint! : Self.unknownAccountFingerprint
+        activeFingerprint = resolved
+        if !rememberedAccounts.contains(where: { $0.fingerprint == resolved }) {
+            let label = resolved == Self.unknownAccountFingerprint ? "Codex" : "Account \(rememberedAccounts.count + 1)"
+            rememberedAccounts.append(CodexRememberedAccount(fingerprint: resolved, label: label))
+            saveRememberedAccounts()
+        }
+        if selectedFingerprint == nil { selectedFingerprint = resolved }
+    }
+
+    // MARK: - Descriptor-facing API
+
+    func accounts() -> [AgentAccount] {
+        rememberedAccounts.map { account in
+            AgentAccount(
+                id: account.fingerprint,
+                label: account.label,
+                subtitle: account.fingerprint == activeFingerprint ? usageData.plan : nil,
+                isRemovable: true,
+                isActive: account.fingerprint == activeFingerprint
+            )
+        }
+    }
+
+    func selectAccount(_ fingerprint: String) {
+        selectedFingerprint = fingerprint
+    }
+
+    func snapshot(for fingerprint: String) -> AccountUsageState {
+        guard fingerprint == activeFingerprint else {
+            return .unavailable(message: "Switch to this account by running `codex login`, then refresh.")
+        }
+        if usageData.isAvailable {
+            var metrics = [
+                UsageMetric(
+                    id: "primary", icon: "clock", title: windowTitle(for: usageData.primaryWindowMinutes),
+                    percentage: usageData.primaryPercentage, subtitle: nil,
+                    resetDescription: usageData.primaryResetDate.map { "Resets in \(Self.resetTimeString($0))" }
+                ),
+            ]
+            if usageData.secondaryWindowMinutes > 0 {
+                metrics.append(UsageMetric(
+                    id: "secondary", icon: "calendar", title: windowTitle(for: usageData.secondaryWindowMinutes),
+                    percentage: usageData.secondaryPercentage, subtitle: nil,
+                    resetDescription: usageData.secondaryResetDate.map { "Resets \(Self.resetTimeString($0))" }
+                ))
+            }
+            return .available(AccountUsageSnapshot(planLabel: usageData.plan, metrics: metrics, lastUpdated: usageData.lastUpdated))
+        }
+        if fetchFailed {
+            return .error(message: "Reading local Codex auth or session files failed.", lastUpdated: nil)
+        }
+        if !isConnected {
+            return .unavailable(message: "Sign in to Codex (`codex login`) to view usage here.")
+        }
+        return .unavailable(message: "Run a Codex task first, then refresh.")
+    }
+
+    func renameAccount(_ fingerprint: String, to newLabel: String) {
+        let trimmed = newLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let index = rememberedAccounts.firstIndex(where: { $0.fingerprint == fingerprint }) else { return }
+        rememberedAccounts[index].label = trimmed
+        saveRememberedAccounts()
+    }
+
+    func removeAccount(_ fingerprint: String) {
+        rememberedAccounts.removeAll { $0.fingerprint == fingerprint }
+        saveRememberedAccounts()
+        if selectedFingerprint == fingerprint {
+            selectedFingerprint = activeFingerprint ?? rememberedAccounts.first?.fingerprint
+        }
+    }
+
+    private func windowTitle(for minutes: Int) -> String {
+        guard minutes > 0 else { return "Usage Window" }
+        if minutes % 1_440 == 0 { return "\(minutes / 1_440)-Day Window" }
+        if minutes % 60 == 0 { return "\(minutes / 60)-Hour Window" }
+        return "\(minutes)-Minute Window"
+    }
+
+    private static func resetTimeString(_ date: Date) -> String {
+        let interval = date.timeIntervalSince(Date())
+        if interval <= 0 { return "soon" }
+        let hours = Int(interval) / 3600
+        let minutes = (Int(interval) % 3600) / 60
+        if hours > 24 {
+            let formatter = DateFormatter()
+            formatter.dateFormat = "E h:mm a"
+            return formatter.string(from: date)
+        } else if hours > 0 {
+            return "\(hours)h \(minutes)m"
+        } else {
+            return "\(minutes)m"
         }
     }
 
@@ -267,6 +428,7 @@ final class CodexUsageManager: ObservableObject {
         guard let snapshot = latestUsageSnapshot(in: sessionsURL, after: cutoffDate) else {
             var data = CodexUsageData(plan: plan)
             data.lastActivityDate = activity
+            data.accountFingerprint = auth.fingerprint
             return .connectedWithoutSnapshot(data: data)
         }
 
@@ -274,7 +436,7 @@ final class CodexUsageManager: ObservableObject {
 
         let primaryPercentage = max(0, min(snapshot.bucket.usedPercent / 100, 1))
         let secondaryPct = snapshot.secondaryBucket.map { max(0, min($0.usedPercent / 100, 1)) } ?? 0
-        let data = CodexUsageData(
+        var data = CodexUsageData(
             primaryPercentage: primaryPercentage,
             primaryResetDate: Date(timeIntervalSince1970: snapshot.bucket.resetsAt),
             primaryWindowMinutes: snapshot.bucket.windowMinutes,
@@ -286,6 +448,7 @@ final class CodexUsageManager: ObservableObject {
             lastActivityDate: activity,
             isAvailable: true
         )
+        data.accountFingerprint = auth.fingerprint
         return .connected(data: data)
     }
 

@@ -20,9 +20,7 @@ final class MenuBarContextMenu: NSMenu, NSMenuDelegate {
         ("default.performance", "Performance"),
         ("default.reload", "Reload"),
         ("default.keyboardlayout", "Keyboard"),
-        ("default.claude-usage", "Claude Usage"),
-        ("default.codex-usage", "Codex Usage"),
-        ("default.opencode-usage", "OpenCode"),
+        ("default.agent-usage", "AI Agent Usage"),
         ("default.countdown", "Countdown"),
     ]
 

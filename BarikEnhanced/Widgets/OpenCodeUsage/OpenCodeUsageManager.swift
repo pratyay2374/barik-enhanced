@@ -79,6 +79,67 @@ final class OpenCodeUsageManager: ObservableObject {
     }
     func refresh() { connectAndFetch() }
 
+    // MARK: - Descriptor-facing API
+    //
+    // OpenCode has exactly one implicit local account — no auth/account model
+    // to speak of, so this is a fixed single-entry adapter.
+
+    static let localAccountID = "local"
+
+    func accounts() -> [AgentAccount] {
+        [AgentAccount(id: Self.localAccountID, label: "Local", subtitle: isConnected ? usageData.plan : nil, isRemovable: false)]
+    }
+
+    func snapshot(for accountID: String) -> AccountUsageState {
+        guard isConnected else {
+            return .unavailable(message: "Sign in to OpenCode Go to view usage here.")
+        }
+        guard usageData.isAvailable else {
+            return .unavailable(message: "Use OpenCode Go first — usage is read from your local message database.")
+        }
+        let metrics = [
+            UsageMetric(
+                id: "rolling", icon: "clock", title: "Rolling Usage",
+                percentage: usageData.rollingPercentage,
+                subtitle: formatCost(usageData.rollingCost, limit: usageData.rollingLimit),
+                resetDescription: usageData.rollingResetDate.map { "Resets in \(Self.resetTimeString($0))" }
+            ),
+            UsageMetric(
+                id: "weekly", icon: "calendar", title: "Weekly Usage",
+                percentage: usageData.weeklyPercentage,
+                subtitle: formatCost(usageData.weeklyCost, limit: usageData.weeklyLimit),
+                resetDescription: usageData.weeklyResetDate.map { "Resets in \(Self.resetTimeString($0))" }
+            ),
+            UsageMetric(
+                id: "monthly", icon: "chart.bar", title: "Monthly Usage",
+                percentage: usageData.monthlyPercentage,
+                subtitle: formatCost(usageData.monthlyCost, limit: usageData.monthlyLimit),
+                resetDescription: usageData.monthlyResetDate.map { "Resets in \(Self.resetTimeString($0))" }
+            ),
+        ]
+        return .available(AccountUsageSnapshot(planLabel: usageData.plan, metrics: metrics, lastUpdated: usageData.lastUpdated))
+    }
+
+    private func formatCost(_ cost: Double, limit: Double) -> String {
+        String(format: "$%.2f / $%.0f", cost, limit)
+    }
+
+    private static func resetTimeString(_ date: Date) -> String {
+        let interval = date.timeIntervalSince(Date())
+        if interval <= 0 { return "soon" }
+        let hours = Int(interval) / 3600
+        let minutes = (Int(interval) % 3600) / 60
+        if hours > 24 {
+            let formatter = DateFormatter()
+            formatter.dateFormat = "E h:mm a"
+            return formatter.string(from: date)
+        } else if hours > 0 {
+            return "\(hours)h \(minutes)m"
+        } else {
+            return "\(minutes)m"
+        }
+    }
+
     private func handleWake() {
         refreshTimer?.invalidate()
         recoveryTask?.cancel()
