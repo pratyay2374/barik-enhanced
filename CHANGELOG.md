@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.6.0
+
 ### New
 
 - **Redesigned Wi‑Fi widget**: The popup is now a compact Wi‑Fi control center instead of a flat SSID/RSSI/Noise/Channel readout.
