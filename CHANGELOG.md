@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### New
+
+- **Redesigned Wi‑Fi widget**: The popup is now a compact Wi‑Fi control center instead of a flat SSID/RSSI/Noise/Channel readout.
+  - **Nearby networks**: Scans and lists nearby Wi‑Fi networks (via CoreWLAN), sorted by signal strength, with security-type badges and a scrollable "Show More Networks" list capped at a sensible height.
+  - **Direct connection**: Tap an open network to join immediately, or a secured one to get an inline password prompt (with a "Remember this network" toggle) right in the popup — no more dropping into System Settings. Explicit Connecting/Connected/Failed/Incorrect-password states throughout.
+  - **Wi‑Fi on/off**: A toggle in the popup header turns Wi‑Fi on or off directly.
+  - **Network details**: Tapping the current network opens a compact details view — signal quality, security type, IP address, frequency band, and a "Forget This Network" action.
+  - **Wi‑Fi Settings shortcut**: Deep-links straight to the System Settings Wi‑Fi pane.
+  - Adopts `ConditionallyActivatableWidget` (like Battery) so the underlying CoreWLAN/NWPathMonitor polling only runs while the widget is actually displayed, and now honors Performance Mode's polling interval instead of a hardcoded 15s timer. Nearby-network scanning only ever runs while the popup is open, never in the background.
+  - **Known networks reconnect silently**: tapping a network macOS already has a saved password for re-joins immediately instead of prompting again — matching the native menu's "Known Network" behavior. Falls back to the password screen automatically if a silent rejoin doesn't stick.
+  - **Menu bar icon**: Wi‑Fi off now greys out the icon instead of hiding it (so there's still something to click to turn it back on), and "Connecting…" now animates instead of sitting static.
+
+### Bug Fixes
+
+- **Wi‑Fi menu bar icon disappeared when Wi‑Fi was turned off**: `NWPathMonitor` reports "no Wi‑Fi interface" identically for "no Wi‑Fi hardware" and "Wi‑Fi hardware present but powered off," so the icon-hiding logic treated a user turning Wi‑Fi off (from the new in-popup toggle, or System Settings) the same as a Mac with no Wi‑Fi card at all. Now reads power state directly from CoreWLAN instead.
+
 ## 1.5.0
 
 ### New

@@ -9,6 +9,11 @@ struct NetworkWidget: View {
         HStack(spacing: 15) {
             if shouldShowWifi {
                 wifiIcon
+                    .symbolEffect(
+                        .variableColor.iterative.reversing,
+                        options: .repeating,
+                        isActive: viewModel.wifiState == .connecting
+                    )
                     .onTapGesture {
                         MenuBarPopup.show(rect: rect, id: "network") { NetworkPopup() }
                     }
@@ -36,27 +41,29 @@ struct NetworkWidget: View {
         .background(.black.opacity(0.001))
     }
 
-    /// Show the Wi-Fi icon only when Wi-Fi is the active interface, explicitly
-    /// disabled, or has no connectivity — but NOT when it's merely "available
-    /// but not in use" while Ethernet is the active connection.
+    /// Show the Wi-Fi icon whenever there's Wi-Fi hardware at all. Wi-Fi being
+    /// turned off is itself a state worth surfacing (greyed out, per the icon
+    /// below) rather than hiding — the icon is how you'd turn it back on.
+    /// The one case still hidden: Wi-Fi merely "available but not in use"
+    /// while Ethernet is the active connection, to avoid a redundant icon.
     private var shouldShowWifi: Bool {
+        guard viewModel.hasWifiHardware else { return false }
+        if !viewModel.isWifiPowered { return true }
         switch viewModel.wifiState {
-        case .notSupported:
-            // No Wi-Fi hardware at all — hide
-            return false
         case .disconnected:
-            // Wi-Fi interface is available but not in use (e.g. Ethernet is
-            // the active path). Only show if Ethernet is also not connected,
-            // so the user still gets *something* clickable.
             return viewModel.ethernetState != .connected
                 && viewModel.ethernetState != .connectedWithoutInternet
         default:
-            // connected, connecting, connectedWithoutInternet, disabled — always show
+            // connected, connecting, connectedWithoutInternet, disabled, notSupported — always show
             return true
         }
     }
 
     private var wifiIcon: some View {
+        if !viewModel.isWifiPowered {
+            return Image(systemName: "wifi.slash")
+                .foregroundColor(.gray.opacity(0.5))
+        }
         if viewModel.ssid == "Not connected" {
             return Image(systemName: "wifi.slash")
                 .foregroundColor(.red)
