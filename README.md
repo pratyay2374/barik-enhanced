@@ -51,6 +51,7 @@ Right-click the menu bar or click the gear icon to open the visual configurator.
 ### Settings Menu
 Click the gear icon at the end of the bar to access:
 - **Configure Widgets** — open the drag & drop configurator
+- **Reload Config** — re-read the on-disk config and apply it without restarting
 - **Launch at Login** — start Barik Enhanced on boot
 - **About** — credits and version info
 - **Quit** — close the app
