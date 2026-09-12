@@ -10,6 +10,15 @@ struct SettingsMenuView: View {
                 WidgetConfiguratorWindow.show()
             }
 
+            SettingsMenuItem(icon: "arrow.clockwise", title: "Reload Config") {
+                ConfigManager.shared.reloadConfig()
+                SpacesViewModel.shared.forceRefresh()
+                NotificationCenter.default.post(
+                    name: Notification.Name("ManualReloadTriggered"),
+                    object: nil
+                )
+            }
+
             // Launch at Login
             Button(action: {
                 launchAtLogin.toggle()

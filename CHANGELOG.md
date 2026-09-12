@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### New
+
+- **Reload Config in settings menu**: The gear-icon settings popup now has a "Reload Config" action that re-reads the on-disk config and applies it to the running app, mirroring the existing menu bar reload button — no need to quit and relaunch after editing the config file.
+
 ## 1.6.0
 
 ### New
