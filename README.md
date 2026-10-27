@@ -1,8 +1,8 @@
 # Barik Enhanced
 
-[![Version](https://img.shields.io/badge/version-1.6.0-blue.svg)](https://github.com/pratyay2374/barik-enhanced/releases/tag/v1.6.0)
+[![Version](https://img.shields.io/badge/version-1.9.0-blue.svg)](https://github.com/pratyay2374/barik-enhanced/releases/tag/v1.9.0)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![macOS](https://img.shields.io/badge/macOS-14.0%2B-black.svg)](https://github.com/pratyay2374/barik-enhanced)
+[![macOS](https://img.shields.io/badge/macOS-14.6%2B-black.svg)](https://github.com/pratyay2374/barik-enhanced)
 
 A custom, fully configurable menu bar for macOS. Built on top of [Barik](https://github.com/mocki-toki/barik) with new widgets, drag-and-drop configuration, performance optimizations, and more.
 
@@ -74,7 +74,7 @@ open BarikEnhanced.xcodeproj
 Build and run with Xcode (Cmd+R).
 
 ### Requirements
-- macOS 14.0+
+- macOS 14.6+
 - Xcode 15+
 - A window manager like [AeroSpace](https://github.com/nikitabobko/AeroSpace) or [yabai](https://github.com/koekeishiya/yabai) (optional, for Spaces widget)
 

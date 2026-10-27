@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.9.0 - 2026-10-27
+
 ### Upstream integration (through 1.8.7)
 
 - Added optional **Meetings**, **Clipboard**, **WireGuard**, and **Syncthing** widgets, including calendar meeting links, in-memory clipboard history, safe multi-profile VPN switching, and per-device sync status.
