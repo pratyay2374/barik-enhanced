@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 1.9.1 - 2026-10-27
+
+### Bug Fixes
+
+- **Unclickable menu bar**: Keep the interactive bar above macOS's transparent native menu-bar hit area, which otherwise intercepts every widget click even with the native bar hidden. Keep the wallpaper panel behind applications and non-interactive.
+- **Panel dimensions**: Apply the initial config before creating panels and update their frames after config reloads, so the interactive window matches the configured bar height instead of retaining the default 55-point height.
+- Added native panel event, Settings click, stacking, wake-recovery, and initial-config regression coverage.
+
 ## 1.9.0 - 2026-10-27
 
 ### Upstream integration (through 1.8.7)

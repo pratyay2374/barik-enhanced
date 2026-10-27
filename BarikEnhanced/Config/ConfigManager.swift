@@ -145,16 +145,21 @@ final class ConfigManager: ObservableObject {
         parseConfigFile(at: path)
     }
 
-    private func parseConfigFile(at path: String) {
+    func parseConfigFile(at path: String) {
         do {
             let content = try String(contentsOfFile: path, encoding: .utf8)
             let decoder = TOMLDecoder()
             let rootToml = try decoder.decode(RootToml.self, from: content)
-            DispatchQueue.main.async {
+            let publish = {
                 self.config = Config(rootToml: rootToml)
-                
-                // Notify about config change for widget activation
                 NotificationCenter.default.post(name: NSNotification.Name("ConfigChanged"), object: nil)
+            }
+            // Startup creates panels immediately after loading config. Publish
+            // synchronously on main so their frames use the user's dimensions.
+            if Thread.isMainThread {
+                publish()
+            } else {
+                DispatchQueue.main.async(execute: publish)
             }
         } catch {
             initError = "Error parsing TOML file: \(error.localizedDescription)"

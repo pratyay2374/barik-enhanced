@@ -4,6 +4,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var backgroundPanels: [NSPanel] = []
     private var menuBarPanels: [NSPanel] = []
 
+    // On current macOS, MenuBarAgent keeps a transparent status-level window
+    // across the top strip even with the native menu bar hidden. A backstop-
+    // menu panel is visible underneath it but never receives mouse clicks.
+    private static let menuBarWindowLevel = NSWindow.Level(
+        rawValue: Int(CGWindowLevelForKey(.statusWindow)) + 1)
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Hosted unit tests need the app process for @testable import, but must
         // not create panels or trip the production single-instance guard.
@@ -42,6 +48,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         NotificationCenter.default.addObserver(
             self,
+            selector: #selector(configurationDidChange(_:)),
+            name: NSNotification.Name("ConfigChanged"),
+            object: nil)
+
+        NotificationCenter.default.addObserver(
+            self,
             selector: #selector(screenParametersDidChange(_:)),
             name: NSApplication.didChangeScreenParametersNotification,
             object: nil)
@@ -63,6 +75,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             selector: #selector(screensDidWake(_:)),
             name: NSWorkspace.screensDidWakeNotification,
             object: nil)
+    }
+
+    @objc private func configurationDidChange(_ notification: Notification) {
+        setupPanels()
     }
 
     @objc private func screenParametersDidChange(_ notification: Notification) {
@@ -95,7 +111,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Configures and displays the background and menu bar panels.
-    private func setupPanels() {
+    func setupPanels() {
         let monitorMode = ConfigManager.shared.config.monitors.mode
         let screens: [NSScreen]
 
@@ -153,7 +169,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 backgroundPanels[index].level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopWindow)))
                 backgroundPanels[index].orderFront(nil)
                 menuBarPanels[index].setFrame(menuBarFrame, display: true)
-                menuBarPanels[index].level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.backstopMenu)))
+                menuBarPanels[index].level = Self.menuBarWindowLevel
                 menuBarPanels[index].orderFront(nil)
             } else {
                 // Create new panels
@@ -165,7 +181,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 )
                 let menuBarPanel = createPanel(
                     frame: menuBarFrame,
-                    level: Int(CGWindowLevelForKey(.backstopMenu)),
+                    level: Self.menuBarWindowLevel.rawValue,
                     hostingRootView: AnyView(MenuBarView()),
                     ignoresMouse: false
                 )
@@ -176,7 +192,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Creates an NSPanel with the provided parameters.
-    private func createPanel(
+    func createPanel(
         frame: CGRect, level: Int, hostingRootView: AnyView,
         ignoresMouse: Bool = false
     ) -> NSPanel {
