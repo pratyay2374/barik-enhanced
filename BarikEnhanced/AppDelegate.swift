@@ -5,6 +5,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarPanels: [NSPanel] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Hosted unit tests need the app process for @testable import, but must
+        // not create panels or trip the production single-instance guard.
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"]
+            != nil
+        {
+            return
+        }
+
         // Prevent multiple instances
         let runningApps = NSWorkspace.shared.runningApplications.filter {
             $0.bundleIdentifier == Bundle.main.bundleIdentifier
@@ -152,7 +160,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let backgroundPanel = createPanel(
                     frame: screenFrame,
                     level: Int(CGWindowLevelForKey(.desktopWindow)),
-                    hostingRootView: AnyView(BackgroundView()),
+                    hostingRootView: AnyView(BackgroundView(screen: screen)),
                     ignoresMouse: true
                 )
                 let menuBarPanel = createPanel(
@@ -184,10 +192,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         newPanel.isReleasedWhenClosed = false
         newPanel.ignoresMouseEvents = ignoresMouse
         newPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-        let hostingView = NSHostingView(rootView: hostingRootView)
+        // Host the SwiftUI view inside a plain container: an NSHostingView with
+        // empty content (the disabled background) reports a zero fitting size
+        // and collapses the panel, hiding the background after it is enabled.
+        let container = NSView(frame: NSRect(origin: .zero, size: frame.size))
+        let hostingView = FirstMouseHostingView(rootView: hostingRootView)
+        hostingView.frame = container.bounds
+        hostingView.autoresizingMask = [.width, .height]
         hostingView.wantsLayer = true
         hostingView.layer?.isOpaque = false
-        newPanel.contentView = hostingView
+        container.addSubview(hostingView)
+        newPanel.contentView = container
+        newPanel.setFrame(frame, display: true)
         newPanel.orderFront(nil)
         return newPanel
     }

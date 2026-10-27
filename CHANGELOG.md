@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Upstream integration (through 1.8.7)
+
+- Added optional **Meetings**, **Clipboard**, **WireGuard**, and **Syncthing** widgets, including calendar meeting links, in-memory clipboard history, safe multi-profile VPN switching, and per-device sync status.
+- Added System Monitor traces, rolling history, and top CPU/RAM consumers with a two-step terminate control. Retained this fork's separate popups, efficient background sampling, and performance-mode network intervals; popups temporarily use live sampling.
+- Added the **Blur Background** settings toggle and wallpaper blur, while preserving custom radius, opacity, color, and black backgrounds.
+- Fixed commented TOML table rewrites, hung AeroSpace commands, first-click handling, disabled background panel sizing, duplicate widget identities, and failed-update busy states.
+- Preserved the unified AI Agent Usage widget, redesigned Wi-Fi controls, media/audio enhancements, notch-aware layout, Reload Config action, and fork-specific update/changelog URLs.
+- Added upstream's hosted XCTest target and regression suite. Fork release numbering remains independent of upstream.
+
 ### New
 
 - **Reload Config in settings menu**: The gear-icon settings popup now has a "Reload Config" action that re-reads the on-disk config and applies it to the running app, mirroring the existing menu bar reload button — no need to quit and relaunch after editing the config file.

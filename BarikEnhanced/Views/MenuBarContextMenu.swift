@@ -1,11 +1,15 @@
 import AppKit
 
 final class MenuBarContextMenu: NSMenu, NSMenuDelegate {
-    private static let widgetEntries: [(id: String, name: String)] = [
+    static let widgetEntries: [(id: String, name: String)] = [
         ("default.spaces", "Spaces"),
         ("default.network", "Network"),
+        ("default.wireguard", "WireGuard"),
+        ("default.syncthing", "Syncthing"),
         ("default.battery", "Battery"),
         ("default.time", "Time & Calendar"),
+        ("default.meetings", "Meetings"),
+        ("default.clipboard", "Clipboard"),
         ("default.nowplaying", "Now Playing"),
         ("default.weather", "Weather"),
         ("default.cpuram", "CPU & RAM"),
