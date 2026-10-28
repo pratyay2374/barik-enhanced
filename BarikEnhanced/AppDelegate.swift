@@ -3,6 +3,8 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var backgroundPanels: [NSPanel] = []
     private var menuBarPanels: [NSPanel] = []
+    private var nativeMenuBarIsVisible = false
+    private var nativeMenuBarObserver: NativeMenuBarVisibilityObserver?
 
     // On current macOS, MenuBarAgent keeps a transparent status-level window
     // across the top strip even with the native menu bar hidden. A backstop-
@@ -112,6 +114,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Configures and displays the background and menu bar panels.
     func setupPanels() {
+        if nativeMenuBarObserver == nil {
+            nativeMenuBarIsVisible = NSMenu.menuBarVisible()
+            nativeMenuBarObserver = NativeMenuBarVisibilityObserver { [weak self] visible in
+                self?.nativeMenuBarIsVisible = visible
+                self?.applyNativeMenuBarVisibility()
+            }
+        }
+
         let monitorMode = ConfigManager.shared.config.monitors.mode
         let screens: [NSScreen]
 
@@ -170,7 +180,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 backgroundPanels[index].orderFront(nil)
                 menuBarPanels[index].setFrame(menuBarFrame, display: true)
                 menuBarPanels[index].level = Self.menuBarWindowLevel
-                menuBarPanels[index].orderFront(nil)
             } else {
                 // Create new panels
                 let backgroundPanel = createPanel(
@@ -187,6 +196,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 )
                 backgroundPanels.append(backgroundPanel)
                 menuBarPanels.append(menuBarPanel)
+            }
+        }
+        applyNativeMenuBarVisibility()
+    }
+
+    private func applyNativeMenuBarVisibility() {
+        let yieldToNativeMenu = nativeMenuBarIsVisible
+            && ConfigManager.shared.config.experimental.position == .top
+        for panel in menuBarPanels {
+            panel.ignoresMouseEvents = yieldToNativeMenu
+            panel.alphaValue = yieldToNativeMenu ? 0 : 1
+            if yieldToNativeMenu {
+                // Lowering the window alone can leave widgets visible through
+                // native glass. Remove the foreground from display and hit tests.
+                panel.orderOut(nil)
+            } else {
+                panel.level = Self.menuBarWindowLevel
+                panel.orderFront(nil)
             }
         }
     }

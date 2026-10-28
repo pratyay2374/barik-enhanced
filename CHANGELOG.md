@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 1.9.2 - 2026-10-28
+
+### Bug Fixes
+
+- **Native menu overlap**: Hide the top-positioned Barik foreground and release its mouse input while the native macOS menu bar is revealed; restore Barik when the native menu hides. This preserves both widget clicks and the native menu's background and controls.
+- **Visibility recovery**: Keep Barik out of the way through configuration/display refreshes while the native menu is visible. Bottom-positioned bars remain available.
+- Observe documented menu show/hide events without adding a polling timer.
+- Added native reveal/hide, input ownership, refresh, and bottom-bar regression coverage (88 tests total).
+
 ## 1.9.1 - 2026-10-27
 
 ### Bug Fixes
