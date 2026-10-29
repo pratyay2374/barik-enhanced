@@ -210,13 +210,6 @@ final class ConfigManager: ObservableObject {
             # calendar.allow-list = ["Home", "Personal"] # show only these calendars
             # calendar.deny-list = ["Work", "Boss"] # show all calendars except these
 
-            [widgets.default.meetings]
-            title-max-length = 32 # compact title characters (8-80)
-
-            [widgets.default.clipboard]
-            max-items = 10              # in-memory entries (1-20)
-            preview-max-length = 40     # compact preview characters (8-120)
-
             [widgets.default.cpuram]
             show-icon = false
             cpu-warning-level = 70
@@ -226,27 +219,6 @@ final class ConfigManager: ObservableObject {
 
             [widgets.default.networkactivity]
             # No specific configuration options yet
-
-            [widgets.default.wireguard]
-            # Legacy single-profile form. Replace these TEST-NET values with your VPN details.
-            tunnel-name = "Example WireGuard"
-            gateway = "192.0.2.1"
-            refresh-interval = 30 # seconds (clamped to 10-600)
-            peers = ["Example Router=198.51.100.10", "Example Node=203.0.113.20"]
-            # Optional multi-profile form. When present, the connected profile is selected automatically.
-            profiles = [
-              { name = "Primary", tunnel-name = "Example Primary", gateway = "192.0.2.1", peers = ["Router=198.51.100.10"] },
-              { name = "Backup", tunnel-name = "Example Backup", gateway = "203.0.113.1", peers = ["Phone=203.0.113.20"] },
-            ]
-
-            [widgets.default.syncthing]
-            api-url = "http://127.0.0.1:8384"
-            api-key = "" # Syncthing Settings > GUI > API Key
-            folder-id = "developer"
-            local-name = "Saturn"
-            peer-name = "Jupiter"
-            # peer-device-id = "" # optional; use when peer-name is ambiguous
-            refresh-interval = 15 # seconds (clamped to 5-600)
 
             [widgets.default.performance]
             # Performance mode widget - replaces volume widget
@@ -345,7 +317,7 @@ final class ConfigManager: ObservableObject {
         }
     }
 
-    func updatedTOMLString(
+    private func updatedTOMLString(
         original: String,
         key: String,
         newValue: String,
@@ -371,17 +343,12 @@ final class ConfigManager: ObservableObject {
 
             for line in lines {
                 let trimmed = line.trimmingCharacters(in: .whitespaces)
-                // Headers can carry an inline comment (`[table] # note`).
-                let header = trimmed
-                    .split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)
-                    .first
-                    .map { $0.trimmingCharacters(in: .whitespaces) } ?? trimmed
-                if header.hasPrefix("[") && header.hasSuffix("]") {
+                if trimmed.hasPrefix("[") && trimmed.hasSuffix("]") {
                     if insideTargetTable && !updatedKey {
                         newLines.append("\(actualKey) = \(renderedValue)")
                         updatedKey = true
                     }
-                    if header == tableHeader {
+                    if trimmed == tableHeader {
                         foundTable = true
                         insideTargetTable = true
                     } else {

@@ -7,7 +7,7 @@ import os
 /// This class monitors system performance metrics: CPU, RAM, Temperature, and Network Activity.
 ///
 /// Architecture: Uses a dual-timer approach for efficiency:
-/// - CPU/RAM: Fixed 1.5s interval via DispatchSourceTimer (Mach syscalls cost ~0.01ms)
+/// - CPU/RAM: Fixed 2s interval via DispatchSourceTimer (Mach syscalls cost ~0.01ms)
 /// - Network: Mode-dependent interval (controlled by PerformanceModeManager)
 ///
 /// UI updates are gated behind change thresholds to avoid unnecessary SwiftUI re-renders
@@ -20,19 +20,6 @@ class SystemMonitorManager: ObservableObject, ConditionallyActivatableWidget {
     @Published var uploadSpeed: Double = 0.0
     @Published var downloadSpeed: Double = 0.0
     
-    @Published private(set) var uploadHistory: [Double] = Array(repeating: 0, count: 30)
-    @Published private(set) var downloadHistory: [Double] = Array(repeating: 0, count: 30)
-    @Published private(set) var cpuHistory: [Double] = Array(repeating: 0, count: 30)
-    @Published private(set) var ramHistory: [Double] = Array(repeating: 0, count: 30)
-    @Published private(set) var topCPUProcesses: [TopProcess] = []
-    @Published private(set) var topRAMProcesses: [TopProcess] = []
-
-    private var cpuHistorySeeded = false
-    private var ramHistorySeeded = false
-    private var liveUpdateClients = 0
-    private var processUpdateClients = 0
-    private var processTimer: DispatchSourceTimer?
-
     // Internal CPU breakdown for popup
     @Published var userLoad: Double = 0.0
     @Published var systemLoad: Double = 0.0
@@ -49,14 +36,14 @@ class SystemMonitorManager: ObservableObject, ConditionallyActivatableWidget {
     /// Background queue for all system metric collection (Mach syscalls + getifaddrs)
     private let backgroundQueue = DispatchQueue(label: "com.barik-enhanced.sysmon", qos: .utility)
     
-    /// Fast timer for CPU/RAM — fixed 1.5s interval regardless of performance mode.
+    /// Fast timer for CPU/RAM — fixed 2s interval regardless of performance mode.
     /// Mach kernel calls are essentially free (~0.01ms total), so this has negligible CPU impact.
     private var cpuRamTimer: DispatchSourceTimer?
     
     /// Slower timer for network stats — interval varies with performance mode.
     private var networkTimer: DispatchSourceTimer?
     
-    /// Background polling interval for CPU/RAM
+    /// Fixed polling interval for CPU/RAM (2 seconds)
     private static let cpuRamInterval: TimeInterval = 1.5
     
     /// Leeway for timer coalescing — lets macOS batch our timer with other system timers
@@ -186,7 +173,6 @@ class SystemMonitorManager: ObservableObject, ConditionallyActivatableWidget {
     private func startMonitoring() {
         startCPURamTimer()
         startNetworkTimer()
-        if processUpdateClients > 0 { startProcessTimer() }
         
         // Initial update immediately
         backgroundQueue.async { [weak self] in
@@ -198,17 +184,14 @@ class SystemMonitorManager: ObservableObject, ConditionallyActivatableWidget {
     private func stopMonitoring() {
         stopCPURamTimer()
         stopNetworkTimer()
-        processTimer?.cancel()
-        processTimer = nil
     }
     
-    /// Starts the CPU/RAM timer, temporarily at 1 Hz while a popup is visible
+    /// Starts the fixed-interval CPU/RAM timer (2s, with 500ms leeway for coalescing)
     private func startCPURamTimer() {
-        let interval = liveUpdateClients > 0 ? 1.0 : Self.cpuRamInterval
         let timer = DispatchSource.makeTimerSource(queue: backgroundQueue)
         timer.schedule(
-            deadline: .now() + interval,
-            repeating: interval,
+            deadline: .now() + Self.cpuRamInterval,
+            repeating: Self.cpuRamInterval,
             leeway: Self.timerLeeway
         )
         timer.setEventHandler { [weak self] in
@@ -227,11 +210,10 @@ class SystemMonitorManager: ObservableObject, ConditionallyActivatableWidget {
     
     /// Starts the mode-dependent network timer
     private func startNetworkTimer() {
-        let interval = liveUpdateClients > 0 ? 1.0 : currentNetworkInterval
         let timer = DispatchSource.makeTimerSource(queue: backgroundQueue)
         timer.schedule(
-            deadline: .now() + interval,
-            repeating: interval,
+            deadline: .now() + currentNetworkInterval,
+            repeating: currentNetworkInterval,
             leeway: Self.timerLeeway
         )
         timer.setEventHandler { [weak self] in
@@ -248,7 +230,7 @@ class SystemMonitorManager: ObservableObject, ConditionallyActivatableWidget {
         networkTimer = nil
     }
     
-    // MARK: - CPU + RAM collection
+    // MARK: - CPU + RAM collection (runs every 2s)
     
     private func updateCPURAM() {
         updateCPUUsage()
@@ -329,22 +311,19 @@ class SystemMonitorManager: ObservableObject, ConditionallyActivatableWidget {
                 let newIdlePercent = min(100.0, max(0.0, Double(idleDelta) / Double(totalDelta) * 100.0))
                 let newCpuLoad = min(100.0, max(0.0, newUserPercent + newSystemPercent))
                 
-                DispatchQueue.main.async {
-                    let cpuChanged = abs(newCpuLoad - self.cpuLoad) >= Self.cpuChangeThreshold
-                    let detailChanged = abs(newUserPercent - self.userLoad) >= Self.cpuDetailThreshold
-                        || abs(newSystemPercent - self.systemLoad) >= Self.cpuDetailThreshold
-                        || abs(newIdlePercent - self.idleLoad) >= Self.cpuDetailThreshold
-                    if cpuChanged || detailChanged {
+                // Threshold-gated UI update — only push to @Published if values changed visibly
+                let cpuChanged = abs(newCpuLoad - self.cpuLoad) >= Self.cpuChangeThreshold
+                let detailChanged = abs(newUserPercent - self.userLoad) >= Self.cpuDetailThreshold
+                    || abs(newSystemPercent - self.systemLoad) >= Self.cpuDetailThreshold
+                    || abs(newIdlePercent - self.idleLoad) >= Self.cpuDetailThreshold
+                
+                if cpuChanged || detailChanged {
+                    DispatchQueue.main.async {
                         self.userLoad = newUserPercent
                         self.systemLoad = newSystemPercent
                         self.idleLoad = newIdlePercent
                         self.cpuLoad = newCpuLoad
                     }
-                    let history = self.cpuHistorySeeded
-                        ? Self.appending(self.cpuHistory, newCpuLoad)
-                        : Array(repeating: newCpuLoad, count: self.cpuHistory.count)
-                    if history != self.cpuHistory { self.cpuHistory = history }
-                    self.cpuHistorySeeded = true
                 }
             }
         }
@@ -405,23 +384,20 @@ class SystemMonitorManager: ObservableObject, ConditionallyActivatableWidget {
         
         let newRamUsagePercent = newTotalMemoryGB > 0 ? min(100.0, max(0.0, (usedMemoryGB / newTotalMemoryGB) * 100.0)) : 0.0
         
-        DispatchQueue.main.async {
-            let percentChanged = abs(newRamUsagePercent - self.ramUsage) >= Self.ramChangeThreshold
-            let detailChanged = abs(newActiveMemoryGB - self.activeRAM) >= Self.ramDetailThreshold
-                || abs(newWiredMemoryGB - self.wiredRAM) >= Self.ramDetailThreshold
-                || abs(newCompressedMemoryGB - self.compressedRAM) >= Self.ramDetailThreshold
-            if percentChanged || detailChanged || self.totalRAM == 0 {
+        // Threshold-gated UI update
+        let percentChanged = abs(newRamUsagePercent - self.ramUsage) >= Self.ramChangeThreshold
+        let detailChanged = abs(newActiveMemoryGB - self.activeRAM) >= Self.ramDetailThreshold
+            || abs(newWiredMemoryGB - self.wiredRAM) >= Self.ramDetailThreshold
+            || abs(newCompressedMemoryGB - self.compressedRAM) >= Self.ramDetailThreshold
+        
+        if percentChanged || detailChanged {
+            DispatchQueue.main.async {
                 self.ramUsage = newRamUsagePercent
                 self.totalRAM = newTotalMemoryGB
                 self.activeRAM = newActiveMemoryGB
                 self.wiredRAM = newWiredMemoryGB
                 self.compressedRAM = newCompressedMemoryGB
             }
-            let history = self.ramHistorySeeded
-                ? Self.appending(self.ramHistory, newRamUsagePercent)
-                : Array(repeating: newRamUsagePercent, count: self.ramHistory.count)
-            if history != self.ramHistory { self.ramHistory = history }
-            self.ramHistorySeeded = true
         }
     }
     
@@ -479,91 +455,10 @@ class SystemMonitorManager: ObservableObject, ConditionallyActivatableWidget {
             DispatchQueue.main.async {
                 self.uploadSpeed = uploadSpeedMBps
                 self.downloadSpeed = downloadSpeedMBps
-                let uploadHistory = Self.appending(self.uploadHistory, uploadSpeedMBps)
-                let downloadHistory = Self.appending(self.downloadHistory, downloadSpeedMBps)
-                if uploadHistory != self.uploadHistory { self.uploadHistory = uploadHistory }
-                if downloadHistory != self.downloadHistory { self.downloadHistory = downloadHistory }
             }
         }
         
         previousNetworkData = currentNetworkData
         lastNetworkUpdate = currentTime
     }
-    /// Only popup visibility enables fast sampling. Process scans are needed
-    /// only by popups that actually display the top-consumer list.
-    func beginLiveUpdates(includeProcesses: Bool = true) {
-        liveUpdateClients += 1
-        if includeProcesses { processUpdateClients += 1 }
-        guard isActive else { return }
-        if processUpdateClients > 0 { startProcessTimer() }
-        if liveUpdateClients == 1 {
-            stopCPURamTimer()
-            stopNetworkTimer()
-            startCPURamTimer()
-            startNetworkTimer()
-            backgroundQueue.async { [weak self] in
-                self?.updateCPURAM()
-                self?.updateNetworkActivity()
-            }
-        }
-        if includeProcesses {
-            backgroundQueue.async { [weak self] in self?.updateProcesses() }
-        }
-    }
-
-    func endLiveUpdates(includeProcesses: Bool = true) {
-        liveUpdateClients = max(0, liveUpdateClients - 1)
-        if includeProcesses { processUpdateClients = max(0, processUpdateClients - 1) }
-        if processUpdateClients == 0 {
-            processTimer?.cancel()
-            processTimer = nil
-        }
-        guard liveUpdateClients == 0, isActive else { return }
-        stopCPURamTimer()
-        stopNetworkTimer()
-        startCPURamTimer()
-        startNetworkTimer()
-    }
-
-    private func startProcessTimer() {
-        guard processTimer == nil else { return }
-        let timer = DispatchSource.makeTimerSource(queue: backgroundQueue)
-        timer.schedule(deadline: .now() + 2, repeating: 2, leeway: Self.timerLeeway)
-        timer.setEventHandler { [weak self] in self?.updateProcesses() }
-        timer.resume()
-        processTimer = timer
-    }
-
-    private static func appending(_ history: [Double], _ value: Double) -> [Double] {
-        var updated = history
-        updated.removeFirst()
-        updated.append(value)
-        return updated
-    }
-
-    // MARK: - Top processes
-
-    private func updateProcesses() {
-        let all = ProcessSampler.sample()
-        guard !all.isEmpty else { return }
-        let byCPU = Array(all.sorted { $0.cpuPercent > $1.cpuPercent }.prefix(8))
-        let byRAM = Array(all.sorted { $0.memoryBytes > $1.memoryBytes }.prefix(8))
-        DispatchQueue.main.async {
-            self.topCPUProcesses = byCPU
-            self.topRAMProcesses = byRAM
-        }
-    }
-
-    /// Sends SIGTERM and refreshes the list shortly after. Returns false when
-    /// the PID is protected or the signal cannot be delivered (root-owned).
-    @discardableResult
-    func kill(process: TopProcess) -> Bool {
-        guard process.id > 1, Darwin.kill(process.id, SIGTERM) == 0 else {
-            return false
-        }
-        backgroundQueue.asyncAfter(deadline: .now() + 0.6) { [weak self] in
-            self?.updateProcesses()
-        }
-        return true
-    }
-}
+} 

@@ -2,30 +2,8 @@ import SwiftUI
 
 struct BackgroundView: View {
     @ObservedObject var configManager = ConfigManager.shared
-    let screen: NSScreen?
 
-    private var wallpaper: NSImage? {
-        guard let screen,
-              let url = NSWorkspace.shared.desktopImageURL(for: screen)
-        else {
-            return nil
-        }
-        return NSImage(contentsOf: url)
-    }
-
-    var body: some View {
-        if configManager.config.experimental.background.displayed {
-            GeometryReader { geometry in
-                backgroundColor(geometry)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func backgroundColor(_ geometry: GeometryProxy) -> some View {
-        let height = configManager.config.experimental.background.resolveHeight()
-            ?? geometry.size.height
-        let background = configManager.config.experimental.background
+    private func spacer(_ geometry: GeometryProxy) -> some View {
         let theme: ColorScheme? = {
             switch configManager.config.rootToml.theme {
             case "dark": return .dark
@@ -34,33 +12,38 @@ struct BackgroundView: View {
             }
         }()
 
-        Group {
-            if background.blurRadius != nil || background.opacity != nil || background.color != nil {
-                Color.clear.background(
-                    CustomBlurView(
-                        radius: background.blurRadius ?? 0,
-                        opacity: background.opacity ?? (background.black ? 1.0 : 0.0),
-                        color: NSColor(hex: background.color) ?? (background.black ? .black : .clear)
-                    )
-                )
-            } else if background.black {
-                Color.black
-            } else if let wallpaper {
-                // A Material only tints the desktop; this is a real Gaussian
-                // blur of the wallpaper, so none of the original colours are
-                // replaced by gray.
-                Image(nsImage: wallpaper)
-                    .resizable()
-                    .scaledToFill()
-                    .blur(radius: background.wallpaperBlurRadius)
-                    .clipped()
-            } else {
-                Color.clear
-                    .background(background.blur)
+        let height = configManager.config.experimental.background.resolveHeight()
+
+        return Color.clear
+            .frame(maxWidth: .infinity, maxHeight: height ?? geometry.size.height)
+            .preferredColorScheme(theme)
+    }
+
+    var body: some View {
+        let bgConfig = configManager.config.experimental.background
+        if bgConfig.displayed {
+            GeometryReader { geometry in
+                if bgConfig.blurRadius != nil || bgConfig.opacity != nil || bgConfig.color != nil {
+                    spacer(geometry)
+                        .background(
+                            CustomBlurView(
+                                radius: bgConfig.blurRadius ?? 0,
+                                opacity: bgConfig.opacity ?? (bgConfig.black ? 1.0 : 0.0),
+                                color: NSColor(hex: bgConfig.color) ?? (bgConfig.black ? .black : .clear)
+                            )
+                        )
+                        .id("customBlur")
+                } else if bgConfig.black {
+                    spacer(geometry)
+                        .background(.black)
+                        .id("black")
+                } else {
+                    spacer(geometry)
+                        .background(bgConfig.blur)
+                        .id("blur")
+                }
             }
         }
-        .frame(width: geometry.size.width, height: height, alignment: .top)
-        .preferredColorScheme(theme)
     }
 }
 

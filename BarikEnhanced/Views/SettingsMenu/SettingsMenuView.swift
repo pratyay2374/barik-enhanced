@@ -3,11 +3,6 @@ import ServiceManagement
 
 struct SettingsMenuView: View {
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
-    @ObservedObject private var configManager = ConfigManager.shared
-
-    private var backgroundBlurEnabled: Bool {
-        configManager.config.experimental.background.displayed
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -22,13 +17,6 @@ struct SettingsMenuView: View {
                     name: Notification.Name("ManualReloadTriggered"),
                     object: nil
                 )
-            }
-
-            BackgroundBlurToggle(isEnabled: backgroundBlurEnabled) {
-                configManager.updateConfigValue(
-                    key: "experimental.background.displayed",
-                    newValue: backgroundBlurEnabled ? "false" : "true",
-                    wrapInQuotes: false)
             }
 
             // Launch at Login
@@ -74,32 +62,6 @@ struct SettingsMenuView: View {
         }
         .padding(.vertical, 6)
         .frame(width: 200)
-    }
-}
-
-private struct BackgroundBlurToggle: View {
-    let isEnabled: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
-                Image(systemName: isEnabled ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 13))
-                    .foregroundStyle(isEnabled ? .green : .white.opacity(0.4))
-                    .frame(width: 20)
-
-                Text("Blur Background")
-                    .font(.system(size: 13))
-                    .foregroundStyle(.white)
-
-                Spacer()
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(PlainButtonStyle())
     }
 }
 

@@ -379,19 +379,6 @@ struct BackgroundConfig: Decodable {
     let blurRadius: CGFloat?
     let opacity: CGFloat?
     let color: String?
-    /// Raw 1...6 intensity, kept so the wallpaper can be blurred by radius.
-    let blurIndex: Int
-
-    var wallpaperBlurRadius: CGFloat {
-        switch blurIndex {
-        case 1: return 12
-        case 2: return 18
-        case 3: return 26
-        case 4: return 36
-        case 5: return 48
-        default: return 60
-        }
-    }
 
     init() {
         self.displayed = true
@@ -401,7 +388,6 @@ struct BackgroundConfig: Decodable {
         self.blurRadius = nil
         self.opacity = nil
         self.color = nil
-        self.blurIndex = 1
     }
     
     init(from decoder: Decoder) throws {
@@ -422,7 +408,6 @@ struct BackgroundConfig: Decodable {
         
         blur = [.ultraThin, .thin, .regular, .thick, .ultraThick, .bar, .bar][materialIndex - 1]
         self.black = materialIndex == 7
-        self.blurIndex = materialIndex
     }
 
     enum CodingKeys: String, CodingKey {

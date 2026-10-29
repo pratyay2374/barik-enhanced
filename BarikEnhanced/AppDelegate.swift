@@ -185,7 +185,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let backgroundPanel = createPanel(
                     frame: screenFrame,
                     level: Int(CGWindowLevelForKey(.desktopWindow)),
-                    hostingRootView: AnyView(BackgroundView(screen: screen)),
+                    hostingRootView: AnyView(BackgroundView()),
                     ignoresMouse: true
                 )
                 let menuBarPanel = createPanel(
@@ -235,18 +235,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         newPanel.isReleasedWhenClosed = false
         newPanel.ignoresMouseEvents = ignoresMouse
         newPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-        // Host the SwiftUI view inside a plain container: an NSHostingView with
-        // empty content (the disabled background) reports a zero fitting size
-        // and collapses the panel, hiding the background after it is enabled.
-        let container = NSView(frame: NSRect(origin: .zero, size: frame.size))
-        let hostingView = FirstMouseHostingView(rootView: hostingRootView)
-        hostingView.frame = container.bounds
-        hostingView.autoresizingMask = [.width, .height]
+        let hostingView = NSHostingView(rootView: hostingRootView)
         hostingView.wantsLayer = true
         hostingView.layer?.isOpaque = false
-        container.addSubview(hostingView)
-        newPanel.contentView = container
-        newPanel.setFrame(frame, display: true)
+        newPanel.contentView = hostingView
         newPanel.orderFront(nil)
         return newPanel
     }

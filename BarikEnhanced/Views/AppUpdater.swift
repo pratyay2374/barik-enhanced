@@ -207,30 +207,31 @@ final class AppUpdater: ObservableObject {
     ///   - version: The latest version string.
     ///   - completion: Called when the installation process has been triggered.
     func downloadAndInstall(
-        latest version: String, completion: @escaping (Bool) -> Void
+        latest version: String, completion: @escaping () -> Void
     ) {
         downloadAndUnzip(latest: version) { [weak self] tempDir in
             guard let tempDir = tempDir else {
-                completion(false)
+                completion()
                 return
             }
             self?.downloadedUpdatePath = tempDir.path
-            let started = self?.installUpdate(latest: version) ?? false
-            DispatchQueue.main.async { completion(started) }
+            self?.installUpdate(latest: version)
+            DispatchQueue.main.async {
+                completion()
+            }
         }
     }
 
     /// Installs the update by replacing the current application.
     /// - Parameter version: The latest version string.
-    @discardableResult
-    func installUpdate(latest version: String) -> Bool {
+    func installUpdate(latest version: String) {
         guard let downloadedPath = downloadedUpdatePath else {
             print("No downloaded update to install")
-            return false
+            return
         }
         let newAppURL = URL(fileURLWithPath: downloadedPath)
             .appendingPathComponent("BarikEnhanced.app")
-        let destinationURL = Bundle.main.bundleURL
+        let destinationURL = URL(fileURLWithPath: "/Applications/BarikEnhanced.app")
         let script = """
             #!/bin/bash
             sleep 2
@@ -255,10 +256,8 @@ final class AppUpdater: ObservableObject {
             let process = Process()
             process.executableURL = scriptURL
             try process.run()
-            return true
         } catch {
             print("Error installing update: \(error)")
-            return false
         }
     }
 }

@@ -21,13 +21,8 @@ struct UpdateBannerWidget: View {
     private func handleUpdate() {
         isUpdating = true
         updater.downloadAndInstall(latest: updater.latestVersion ?? "") {
-            started in
             DispatchQueue.main.async {
-                if started {
-                    NSApplication.shared.terminate(nil)
-                } else {
-                    isUpdating = false
-                }
+                NSApplication.shared.terminate(nil)
             }
         }
     }

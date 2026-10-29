@@ -94,7 +94,7 @@ class MenuBarPopup {
                 / 1000.0
             let duration = isContentChange ? baseDuration / 2 : baseDuration
             DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
-                panel.contentView = FirstMouseHostingView(
+                panel.contentView = NSHostingView(
                     rootView:
                         ZStack {
                             MenuBarPopupView {
@@ -111,7 +111,7 @@ class MenuBarPopup {
                 }
             }
         } else {
-            panel.contentView = FirstMouseHostingView(
+            panel.contentView = NSHostingView(
                 rootView:
                     ZStack {
                         MenuBarPopupView {
