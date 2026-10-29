@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.9.3 - 2026-10-29
+
 ### Removed
 
 - Reverted the upstream integration through 1.8.7, restoring the fork's previous widgets, system monitoring, background rendering, and update behavior. Retained the later menu click, initial configuration, and native menu visibility fixes and their regression tests.
